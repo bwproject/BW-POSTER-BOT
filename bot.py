@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, InlineKeyboardButton, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ContentType
 
 from config import BOT_TOKEN, GROUPS, ADMINS, POST_FOOTER
 from db import init_db, save_message, get_message
@@ -15,13 +15,12 @@ from scheduler import scheduler, start_scheduler
 from logger import setup_logger
 
 
-# ==========================================================
-# ЛОГГЕР
-# ==========================================================
+# ==================================================
+# LOGGING
+# ==================================================
 setup_logger()
 log = logging.getLogger("BOT")
 
-# ==========================================================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -29,88 +28,114 @@ CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4096
 
 
-# ==========================================================
-# УТИЛИТЫ
-# ==========================================================
+# ==================================================
+# HELPERS
+# ==================================================
 def is_admin(user_id: int) -> bool:
     return user_id in ADMINS
 
 
-def build_caption(original: Optional[str]) -> str:
-    if original:
-        return f"{original.strip()}\n\n{POST_FOOTER.strip()}"
+def build_footer(text: Optional[str]) -> str:
+    if text:
+        return f"{text.strip()}\n\n{POST_FOOTER.strip()}"
     return POST_FOOTER.strip()
 
 
 def split_text(text: str, limit: int) -> Tuple[str, Optional[str]]:
-    """
-    Делит текст на 2 части по лимиту Telegram
-    """
     if len(text) <= limit:
         return text, None
-
-    first = text[:limit]
-    second = text[limit:]
-    return first, second
+    return text[:limit], text[limit:]
 
 
-async def send_with_split(
+# ==================================================
+# SENDER (ВЕСЬ СМАРТ ЗДЕСЬ)
+# ==================================================
+async def smart_send(
     target_chat: int,
     source_chat: int,
     message_id: int,
-    caption: Optional[str],
+    original_text: Optional[str],
+    content_type: str
 ):
-    """
-    Отправка сообщения с автоделением
-    """
-    final_text = build_caption(caption)
-    first_part, second_part = split_text(final_text, CAPTION_LIMIT)
+    footer_text = build_footer(original_text)
 
-    # первое сообщение (оригинальный контент)
+    # -----------------------------
+    # 📝 TEXT
+    # -----------------------------
+    if content_type == ContentType.TEXT:
+        first, second = split_text(footer_text, TEXT_LIMIT)
+        await bot.send_message(target_chat, first, parse_mode=ParseMode.HTML)
+        log.info("Текстовый пост отправлен")
+
+        if second:
+            await bot.send_message(target_chat, second, parse_mode=ParseMode.HTML)
+            log.info("Отправлено продолжение текста")
+        return
+
+    # -----------------------------
+    # 🎤 VOICE / 🎥 VIDEO_NOTE
+    # -----------------------------
+    if content_type in (ContentType.VOICE, ContentType.VIDEO_NOTE):
+        await bot.copy_message(
+            chat_id=target_chat,
+            from_chat_id=source_chat,
+            message_id=message_id
+        )
+        await bot.send_message(
+            chat_id=target_chat,
+            text=footer_text,
+            parse_mode=ParseMode.HTML
+        )
+        log.info("Голос/кружок + подпись вторым сообщением")
+        return
+
+    # -----------------------------
+    # 🖼 MEDIA WITH CAPTION
+    # -----------------------------
+    first, second = split_text(footer_text, CAPTION_LIMIT)
+
     await bot.copy_message(
         chat_id=target_chat,
         from_chat_id=source_chat,
         message_id=message_id,
-        caption=first_part,
+        caption=first,
         parse_mode=ParseMode.HTML
     )
 
-    log.info("Основной пост отправлен")
+    log.info("Медиа пост отправлен")
 
-    # второе сообщение (продолжение)
-    if second_part:
+    if second:
         await bot.send_message(
             chat_id=target_chat,
-            text=second_part,
+            text=second,
             parse_mode=ParseMode.HTML
         )
-        log.info("Отправлено продолжение поста")
+        log.info("Отправлено продолжение caption")
 
 
-# ==========================================================
+# ==================================================
 # /start
-# ==========================================================
+# ==================================================
 @dp.message(CommandStart())
 async def start_handler(msg: Message):
     log.info(f"/start user_id={msg.from_user.id}")
     await msg.answer("Отправь сообщение для постинга")
 
 
-# ==========================================================
-# ПРИЁМ СООБЩЕНИЙ
-# ==========================================================
+# ==================================================
+# CATCH MESSAGE
+# ==================================================
 @dp.message()
 async def catch_message(msg: Message):
     if not is_admin(msg.from_user.id):
-        log.warning(f"Отказ доступа user_id={msg.from_user.id}")
+        log.warning(f"ACCESS DENIED user_id={msg.from_user.id}")
         await msg.reply("❌ Нет доступа")
         return
 
     log.info(
         f"Получено сообщение "
         f"type={msg.content_type} "
-        f"user_id={msg.from_user.id} "
-        f"message_id={msg.message_id}"
+        f"user_id={msg.from_user.id}"
     )
 
     post_id = await save_message(
@@ -121,109 +146,98 @@ async def catch_message(msg: Message):
     )
 
     kb = InlineKeyboardBuilder()
-    for name in GROUPS:
-        kb.add(
-            InlineKeyboardButton(
-                text=f"📢 {name}",
-                callback_data=f"group:{post_id}:{name}"
-            )
-        )
+    for g in GROUPS:
+        kb.add(InlineKeyboardButton(
+            text=f"📢 {g}",
+            callback_data=f"group:{post_id}:{g}"
+        ))
     kb.adjust(1)
 
     await msg.answer("Куда постить?", reply_markup=kb.as_markup())
 
 
-# ==========================================================
-# ВЫБОР ГРУППЫ
-# ==========================================================
+# ==================================================
+# GROUP SELECT
+# ==================================================
 @dp.callback_query(F.data.startswith("group:"))
 async def choose_group(cb: CallbackQuery):
-    _, post_id, group_name = cb.data.split(":")
-    log.info(f"Выбрана группа {group_name} post_id={post_id}")
+    _, post_id, group = cb.data.split(":")
+    log.info(f"Группа выбрана post_id={post_id} group={group}")
 
     kb = InlineKeyboardBuilder()
     kb.add(
-        InlineKeyboardButton(text="🚀 Сейчас", callback_data=f"now:{post_id}:{group_name}"),
-        InlineKeyboardButton(text="⏰ По времени", callback_data=f"time:{post_id}:{group_name}")
+        InlineKeyboardButton(text="🚀 Сейчас", callback_data=f"now:{post_id}:{group}"),
+        InlineKeyboardButton(text="⏰ По времени", callback_data=f"time:{post_id}:{group}")
     )
 
-    await cb.message.edit_text(
-        f"Когда постить в «{group_name}»?",
-        reply_markup=kb.as_markup()
-    )
+    await cb.message.edit_text("Когда постить?", reply_markup=kb.as_markup())
 
 
-# ==========================================================
-# ПОСТ СРАЗУ
-# ==========================================================
+# ==================================================
+# POST NOW
+# ==================================================
 @dp.callback_query(F.data.startswith("now:"))
 async def post_now(cb: CallbackQuery):
-    _, post_id, group_name = cb.data.split(":")
-    chat_id, message_id, caption = await get_message(int(post_id))
+    _, post_id, group = cb.data.split(":")
+    chat_id, msg_id, text = await get_message(int(post_id))
 
-    await send_with_split(
-        target_chat=GROUPS[group_name],
+    await smart_send(
+        target_chat=GROUPS[group],
         source_chat=chat_id,
-        message_id=message_id,
-        caption=caption
+        message_id=msg_id,
+        original_text=text,
+        content_type=cb.message.reply_to_message.content_type
     )
 
-    log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} group={group_name}")
+    log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id}")
     await cb.message.edit_text("✅ Опубликовано")
 
 
-# ==========================================================
-# ОТЛОЖЕННЫЙ ПОСТ
-# ==========================================================
+# ==================================================
+# SCHEDULE
+# ==================================================
 @dp.callback_query(F.data.startswith("time:"))
 async def ask_time(cb: CallbackQuery):
-    _, post_id, group_name = cb.data.split(":")
-    log.info(f"Запрос времени post_id={post_id}")
-
-    await cb.message.edit_text(
-        "Введите дату и время:\nYYYY-MM-DD HH:MM"
-    )
+    _, post_id, group = cb.data.split(":")
+    await cb.message.edit_text("Введите дату и время:\nYYYY-MM-DD HH:MM")
 
     dp.register_message_handler(
-        lambda msg: schedule_post(msg, post_id, group_name),
+        lambda m: schedule_post(m, post_id, group),
         F.from_user.id == cb.from_user.id
     )
 
 
-async def schedule_post(msg: Message, post_id: str, group_name: str):
+async def schedule_post(msg: Message, post_id: str, group: str):
     try:
         dt = datetime.strptime(msg.text, "%Y-%m-%d %H:%M")
     except ValueError:
         await msg.reply("❌ Неверный формат")
         return
 
-    chat_id, message_id, caption = await get_message(int(post_id))
+    chat_id, msg_id, text = await get_message(int(post_id))
 
     scheduler.add_job(
-        send_with_split,
+        smart_send,
         trigger="date",
         run_date=dt,
         kwargs={
-            "target_chat": GROUPS[group_name],
+            "target_chat": GROUPS[group],
             "source_chat": chat_id,
-            "message_id": message_id,
-            "caption": caption
+            "message_id": msg_id,
+            "original_text": text,
+            "content_type": msg.content_type
         }
     )
 
-    log.info(
-        f"ПОСТ ЗАПЛАНИРОВАН post_id={post_id} "
-        f"group={group_name} time={dt}"
-    )
-
+    log.info(f"ПОСТ ЗАПЛАНИРОВАН post_id={post_id} time={dt}")
     await msg.answer(f"⏳ Запланировано на {dt}")
 
 
-# ==========================================================
-# ЗАПУСК
-# ==========================================================
+# ==================================================
+# START
+# ==================================================
 async def main():
-    log.info("=== БОТ ЗАПУСКАЕТСЯ ===")
+    log.info("=== BOT STARTED ===")
     await init_db()
     start_scheduler()
     await dp.start_polling(bot)
