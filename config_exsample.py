@@ -16,7 +16,7 @@ POST_FOOTER = """
 
 The_Mr_Mes109 | https://t.me/tg_themrmes109
 ProjectBW | https://t.me/projectbw_news
-Помойка Mes`a | https://t.me/+MY62b0EYA_1iMTMy
+Помойка Mes`a | https://t.me/+WiiYWMVryB1kNDQy
 """.strip()
 
 MAX_TEXT = 3800
