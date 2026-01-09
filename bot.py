@@ -13,7 +13,6 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
-# ✅ Исправлено: POST_FOOTER вместо SIGNATURE
 from config import BOT_TOKEN, GROUPS, POST_FOOTER, MAX_TEXT
 from db import (
     init_db, save_message, get_message,
@@ -27,17 +26,18 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 )
-
 log = logging.getLogger("BOT")
 
 # ─── FSM ──────────────────────────────────────
 class EditPost(StatesGroup):
     waiting_text = State()
 
+class WaitTime(StatesGroup):
+    waiting = State()
+
 # ─── BOT ──────────────────────────────────────
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
-
 
 # ─── ВСПОМОГАТЕЛЬНО ───────────────────────────
 def split_text(text: str):
@@ -58,26 +58,81 @@ def group_keyboard(post_id: int):
     ])
 
 
+def start_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton("📜 История", callback_data="history_cmd"),
+            InlineKeyboardButton("📝 Черновики", callback_data="drafts_cmd")
+        ]
+    ])
+
+
 # ─── START ────────────────────────────────────
 @dp.message(Command("start"))
 async def start(msg: Message):
-    await msg.answer("Пришли пост для публикации")
+    await msg.answer(
+        "Привет! Пришли пост для публикации.",
+        reply_markup=start_keyboard()
+    )
 
 
 # ─── ИСТОРИЯ ──────────────────────────────────
 @dp.message(Command("history"))
 async def history(msg: Message):
-    posts = await get_history(msg.from_user.id)
+    await send_history(msg.from_user.id, msg)
 
+
+@dp.callback_query(F.data == "history_cmd")
+async def history_cb(cb: CallbackQuery):
+    await send_history(cb.from_user.id, cb.message)
+    await cb.answer()
+
+
+async def send_history(user_id, target):
+    posts = await get_history(user_id)
     if not posts:
-        await msg.answer("История пуста")
+        await target.answer("История пуста")
         return
-
     text = "📊 История постов:\n\n"
     for p in posts:
         text += f"🆔 {p['id']} | {p['status']}\n{(p['caption'] or '')[:60]}\n\n"
+    await target.answer(text)
 
-    await msg.answer(text)
+
+# ─── ДРЕФТЫ ─────────────────────────────────
+@dp.message(Command("drafts"))
+async def show_drafts(msg: Message):
+    await send_drafts(msg.from_user.id, msg)
+
+
+@dp.callback_query(F.data == "drafts_cmd")
+async def drafts_cb(cb: CallbackQuery):
+    await send_drafts(cb.from_user.id, cb.message)
+    await cb.answer()
+
+
+async def send_drafts(user_id, target):
+    posts = await get_history(user_id)
+    drafts = [p for p in posts if p['status'] == 'draft']
+    if not drafts:
+        await target.answer("Нет черновиков")
+        return
+
+    text = "📂 Черновики:\n\n"
+    kb_buttons = []
+    for p in drafts:
+        text += f"🆔 {p['id']} | {(p['caption'] or '')[:50]}...\n"
+        kb_buttons.append([InlineKeyboardButton(f"Выбрать {p['id']}", callback_data=f"draft:{p['id']}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await target.answer(text, reply_markup=kb)
+
+
+# ─── ВЫБОР ЧЕРНОВИКА ─────────────────────────
+@dp.callback_query(F.data.startswith("draft:"))
+async def choose_draft(cb: CallbackQuery):
+    post_id = int(cb.data.split(":")[1])
+    await cb.message.edit_text("Выбери действие:", reply_markup=group_keyboard(post_id))
+    await cb.answer()
 
 
 # ─── ПОЛУЧЕНИЕ ПОСТА ──────────────────────────
@@ -98,7 +153,7 @@ async def receive_post(msg: Message):
     await set_status(post_id, "draft")
 
     await msg.answer(
-        "Выбери действие:",
+        f"Пост сохранён как черновик 📝 (id={post_id})\nВыбери действие, когда будешь готов:",
         reply_markup=group_keyboard(post_id)
     )
 
@@ -108,7 +163,6 @@ async def receive_post(msg: Message):
 async def edit_post(cb: CallbackQuery, state: FSMContext):
     post_id = int(cb.data.split(":")[1])
     await state.update_data(post_id=post_id)
-
     await cb.message.answer("✏️ Пришли новый текст")
     await state.set_state(EditPost.waiting_text)
     await cb.answer()
@@ -138,45 +192,52 @@ async def cancel_post(cb: CallbackQuery):
 
     await set_status(post_id, "cancelled")
     log.info(f"Пост отменён post_id={post_id}")
-
     await cb.message.edit_text("❌ Публикация отменена")
     await cb.answer()
 
 
 # ─── ВЫБОР ГРУППЫ ─────────────────────────────
 @dp.callback_query(F.data.startswith("group:"))
-async def choose_group(cb: CallbackQuery):
+async def choose_group(cb: CallbackQuery, state: FSMContext):
     _, post_id, group = cb.data.split(":")
-
+    # Кнопки для "сейчас" или "выбрать дату/время"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton("📤 Сейчас", callback_data=f"now:{post_id}:{group}"),
-            InlineKeyboardButton("⏰ Через 10 мин", callback_data=f"delay:{post_id}:{group}")
+            InlineKeyboardButton("⏰ Выбрать дату/время", callback_data=f"delay_select:{post_id}:{group}")
         ]
     ])
-
     await cb.message.edit_text("Когда публикуем?", reply_markup=kb)
     await cb.answer()
 
 
-# ─── СЕЙЧАС ───────────────────────────────────
-@dp.callback_query(F.data.startswith("now:"))
-async def post_now(cb: CallbackQuery):
+# ─── ВЫБОР ВРЕМЕНИ ─────────────────────────────
+@dp.callback_query(F.data.startswith("delay_select:"))
+async def ask_datetime(cb: CallbackQuery, state: FSMContext):
     _, post_id, group = cb.data.split(":")
-
-    await publish(post_id, group)
-    await cb.message.edit_text("✅ Опубликовано")
+    await state.update_data(post_id=post_id, group=group)
+    await cb.message.answer("⏰ Пришли время публикации в формате ЧЧ:ММ")
+    await state.set_state(WaitTime.waiting)
     await cb.answer()
 
 
-# ─── С ЗАДЕРЖКОЙ ──────────────────────────────
-@dp.callback_query(F.data.startswith("delay:"))
-async def post_delay(cb: CallbackQuery):
-    _, post_id, group = cb.data.split(":")
+@dp.message(WaitTime.waiting)
+async def schedule_custom_time(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    post_id = data["post_id"]
+    group = data["group"]
+
+    try:
+        hours, minutes = [int(x) for x in msg.text.split(":")]
+        now = datetime.now()
+        run_at = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+        if run_at < now:
+            run_at += timedelta(days=1)
+    except Exception:
+        await msg.answer("❌ Неверный формат. Попробуй ЧЧ:ММ")
+        return
 
     job_id = str(uuid.uuid4())
-    run_at = datetime.now() + timedelta(minutes=10)
-
     scheduler.add_job(
         publish,
         trigger="date",
@@ -187,9 +248,17 @@ async def post_delay(cb: CallbackQuery):
 
     await set_job(post_id, job_id)
     await set_status(post_id, "scheduled")
+    log.info(f"Пост запланирован post_id={post_id} на {run_at}")
+    await msg.answer(f"✅ Запланировано на {run_at.strftime('%d.%m.%Y %H:%M')}")
+    await state.clear()
 
-    log.info(f"Пост запланирован post_id={post_id}")
-    await cb.message.edit_text("⏰ Запланировано через 10 минут")
+
+# ─── СЕЙЧАС ───────────────────────────────────
+@dp.callback_query(F.data.startswith("now:"))
+async def post_now(cb: CallbackQuery):
+    _, post_id, group = cb.data.split(":")
+    await publish(post_id, group)
+    await cb.message.edit_text("✅ Опубликовано")
     await cb.answer()
 
 
@@ -215,23 +284,25 @@ async def publish(post_id: int, group: str):
 async def smart_send(target, source_chat, msg_id, text, content_type):
     parts = split_text(text)
 
+    # Текст
     if content_type == ContentType.TEXT:
         for p in parts:
             await bot.send_message(target, p)
-        await bot.send_message(target, POST_FOOTER)  # ✅ исправлено
+        await bot.send_message(target, POST_FOOTER)
         return
 
+    # Медиа (фото/видео/голос)
     await bot.copy_message(
         chat_id=target,
         from_chat_id=source_chat,
         message_id=msg_id,
         caption=parts[0] if parts else None
     )
-
     for p in parts[1:]:
         await bot.send_message(target, p)
 
-    await bot.send_message(target, POST_FOOTER)  # ✅ исправлено
+    # подпись всегда вторым сообщением
+    await bot.send_message(target, POST_FOOTER)
 
 
 # ─── MAIN ─────────────────────────────────────
