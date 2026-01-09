@@ -35,9 +35,6 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
 # ─── ВСПОМОГАТЕЛЬНО ───────────────────────────
-def split_text(text: str):
-    return [text[i:i + MAX_TEXT] for i in range(0, len(text), MAX_TEXT)]
-
 def group_keyboard(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -203,28 +200,28 @@ async def publish(post_id):
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
 
-
 # ─── SMART SEND ───────────────────────────────
 async def smart_send(target, source_chat, msg_id, text, content_type, include_footer=True):
-    full_text = f"{text}\n\n{POST_FOOTER}" if include_footer and text else text
-    parts = [full_text[i:i + MAX_TEXT] for i in range(0, len(full_text), MAX_TEXT)]
-
+    """
+    Отправка текста или медиа:
+    - Для текста: разбиваем на части и добавляем футер при публикации.
+    - Для медиа: копируем сообщение с caption, добавляем футер только к caption.
+    """
     if content_type == ContentType.TEXT:
+        full_text = f"{text}\n\n{POST_FOOTER}" if include_footer and text else text
+        parts = [full_text[i:i + MAX_TEXT] for i in range(0, len(full_text), MAX_TEXT)]
         for p in parts:
             await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
-        return
-
-    # Все медиа-контенты (фото, видео, аудио, голосовые, документы)
-    await bot.copy_message(
-        chat_id=target,
-        from_chat_id=source_chat,
-        message_id=msg_id,
-        caption=parts[0] if parts else None,
-        parse_mode="HTML"
-    )
-    for p in parts[1:]:
-        await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
-
+    else:
+        # Медиа-контент (фото, видео, голосовые, аудио, документы, видео заметки)
+        caption = f"{text}\n\n{POST_FOOTER}" if include_footer and text else text
+        await bot.copy_message(
+            chat_id=target,
+            from_chat_id=source_chat,
+            message_id=msg_id,
+            caption=caption,
+            parse_mode="HTML"
+        )
 
 # ─── MAIN ─────────────────────────────────────
 async def main():
