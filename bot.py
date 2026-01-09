@@ -43,15 +43,16 @@ def split_text(text: str):
 def group_keyboard(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="MrMes", callback_data=f"group:{post_id}:mrmes"),
-            InlineKeyboardButton(text="ProjectBW", callback_data=f"group:{post_id}:projectbw"),
-            InlineKeyboardButton(text="Помойка", callback_data=f"group:{post_id}:dump")
+            InlineKeyboardButton(text="TheMrMes109", callback_data=f"group:{post_id}:The_Mr_Mes109"),
+            InlineKeyboardButton(text="ProjectBW", callback_data=f"group:{post_id}:ProjectBW"),
+            InlineKeyboardButton(text="Помойка", callback_data=f"group:{post_id}:Trash")
         ],
         [
             InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit:{post_id}"),
             InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel:{post_id}")
         ]
     ])
+
 
 def start_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
