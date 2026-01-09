@@ -13,7 +13,8 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
-from config import BOT_TOKEN, GROUPS, SIGNATURE, MAX_TEXT
+# ✅ Исправлено: POST_FOOTER вместо SIGNATURE
+from config import BOT_TOKEN, GROUPS, POST_FOOTER, MAX_TEXT
 from db import (
     init_db, save_message, get_message,
     update_text, set_status, set_job,
@@ -217,7 +218,7 @@ async def smart_send(target, source_chat, msg_id, text, content_type):
     if content_type == ContentType.TEXT:
         for p in parts:
             await bot.send_message(target, p)
-        await bot.send_message(target, SIGNATURE)
+        await bot.send_message(target, POST_FOOTER)  # ✅ исправлено
         return
 
     await bot.copy_message(
@@ -230,7 +231,7 @@ async def smart_send(target, source_chat, msg_id, text, content_type):
     for p in parts[1:]:
         await bot.send_message(target, p)
 
-    await bot.send_message(target, SIGNATURE)
+    await bot.send_message(target, POST_FOOTER)  # ✅ исправлено
 
 
 # ─── MAIN ─────────────────────────────────────
