@@ -3,7 +3,7 @@ BOT_TOKEN = "dsfsdfsdfsdfsdfsdfdsfsdf"
 GROUPS = {
     "The_Mr_Mes109": -1001883601703,
     "ProjectBW": -1001985838732,
-    "Помойка": -1003583071754,
+    "Trash": -1003583071754,
 }
 
 ADMINS = [
