@@ -1,4 +1,4 @@
-#bot.py (не удалять нужен для ftp) https://github.com/bwproject/BW-POSTER-BOT/edit/main/bot.py
+#bot.py https://github.com/bwproject/BW-POSTER-BOT/edit/main/bot.py
 
 import asyncio
 import logging
