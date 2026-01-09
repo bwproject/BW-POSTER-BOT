@@ -191,13 +191,17 @@ async def publish(post_id):
     if post["status"] == "cancelled":
         return
 
-    target_chat_id = post["target_chat_id"] or post["chat_id"]
+    target_chat_id = post["target_chat_id"]
+    if not target_chat_id:
+        log.warning(f"Не указан target_chat_id для post_id={post_id}")
+        return
 
-    # 1. Сообщение об успешной отправке
-    await bot.send_message(target_chat_id, "✅ Пост успешно отправлен")
-
-    # 2. Сам пост с футером
+    # 1️⃣ Отправка в канал/группу с футером
     await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=True)
+
+    # 2️⃣ Сообщение автору и сам пост обратно в бота
+    await bot.send_message(post["chat_id"], "✅ Пост успешно отправлен")
+    await smart_send(post["chat_id"], post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=True)
 
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
