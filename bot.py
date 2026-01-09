@@ -191,17 +191,14 @@ async def publish(post_id):
     if post["status"] == "cancelled":
         return
 
-    target_chat_id = post["target_chat_id"]
-    if not target_chat_id:
-        log.warning(f"Не указан target_chat_id для post_id={post_id}")
-        return
+    target_chat_id = post["target_chat_id"] or post["chat_id"]
 
     # 1️⃣ Отправка в канал/группу с футером
     await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=True)
 
-    # 2️⃣ Сообщение автору и сам пост обратно в бота
+    # 2️⃣ Сообщение автору и копия поста без футера
     await bot.send_message(post["chat_id"], "✅ Пост успешно отправлен")
-    await smart_send(post["chat_id"], post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=True)
+    await smart_send(post["chat_id"], post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=False)
 
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
@@ -209,7 +206,7 @@ async def publish(post_id):
 
 # ─── SMART SEND ───────────────────────────────
 async def smart_send(target, source_chat, msg_id, text, content_type, include_footer=True):
-    full_text = f"{text}\n\n{POST_FOOTER}" if include_footer else text
+    full_text = f"{text}\n\n{POST_FOOTER}" if include_footer and text else text
     parts = [full_text[i:i + MAX_TEXT] for i in range(0, len(full_text), MAX_TEXT)]
 
     if content_type == ContentType.TEXT:
@@ -217,6 +214,7 @@ async def smart_send(target, source_chat, msg_id, text, content_type, include_fo
             await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
         return
 
+    # Все медиа-контенты (фото, видео, аудио, голосовые, документы)
     await bot.copy_message(
         chat_id=target,
         from_chat_id=source_chat,
