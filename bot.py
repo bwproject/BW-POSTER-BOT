@@ -1,4 +1,4 @@
-#bot.py
+#bot.py (не удалять нужен для ftp) https://github.com/bwproject/BW-POSTER-BOT/edit/main/bot.py
 
 import asyncio
 import logging
@@ -15,7 +15,7 @@ from aiogram.fsm.state import StatesGroup, State
 from config import BOT_TOKEN, GROUPS, POST_FOOTER, MAX_TEXT
 from db import (
     init_db, save_message, get_post, get_history, update_text,
-    set_status, set_job, get_drafts
+    set_status, set_job, get_drafts, set_target_chat
 )
 from scheduler import scheduler, start_scheduler
 
@@ -149,9 +149,18 @@ async def cancel_post(cb: CallbackQuery):
 # ─── ВЫБОР ГРУППЫ ─────────────────────────────
 @dp.callback_query(F.data.startswith("group:"))
 async def choose_group(cb: CallbackQuery):
-    _, post_id, group = cb.data.split(":")
+    _, post_id, group_name = cb.data.split(":")
+    
+    target_chat_id = GROUPS.get(group_name)
+    if not target_chat_id:
+        await cb.message.answer("❌ Ошибка: группа не найдена")
+        await cb.answer()
+        return
+
+    await set_target_chat(post_id, target_chat_id)
+
     kb = schedule_keyboard(post_id)
-    await cb.message.edit_text(f"Когда публикуем в {group}?", reply_markup=kb)
+    await cb.message.edit_text(f"Когда публикуем в {group_name}?", reply_markup=kb)
     await cb.answer()
 
 # ─── ПЛАНИРОВАНИЕ ────────────────────────────
@@ -169,7 +178,7 @@ async def schedule_post(cb: CallbackQuery):
         publish,
         trigger="date",
         run_date=run_at,
-        args=(post_id, post['caption'], post['content_type'], post['chat_id']),
+        args=(post_id,),
         id=job_id
     )
     await set_job(post_id, job_id)
@@ -178,13 +187,19 @@ async def schedule_post(cb: CallbackQuery):
     await cb.answer()
 
 # ─── ПУБЛИКАЦИЯ ───────────────────────────────
-async def publish(post_id, text, content_type, chat_id):
+async def publish(post_id):
     post = await get_post(post_id)
     if post["status"] == "cancelled":
         return
-    await smart_send(chat_id, chat_id, post_id, text, content_type)
+
+    target_chat_id = post.get("target_chat_id")
+    if not target_chat_id:
+        log.warning(f"Не указан target_chat_id для post_id={post_id}")
+        return
+
+    await smart_send(target_chat_id, post['chat_id'], post_id, post['caption'], post['content_type'])
     await set_status(post_id, "posted")
-    log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id}")
+    log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в {target_chat_id}")
 
 # ─── SMART SEND ───────────────────────────────
 async def smart_send(target, source_chat, msg_id, text, content_type):
