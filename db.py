@@ -3,9 +3,7 @@ import logging
 from datetime import datetime
 
 log = logging.getLogger("DB")
-
 DB_NAME = "posts.db"
-
 
 # ─── INIT ─────────────────────────────────────
 async def init_db():
@@ -26,7 +24,6 @@ async def init_db():
         """)
         await db.commit()
     log.info("База данных готова")
-
 
 # ─── CREATE ───────────────────────────────────
 async def save_message(user_id, chat_id, message_id, caption, content_type):
@@ -54,7 +51,6 @@ async def save_message(user_id, chat_id, message_id, caption, content_type):
         await db.commit()
         return cur.lastrowid
 
-
 # ─── READ ─────────────────────────────────────
 async def get_message(post_id):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -67,7 +63,6 @@ async def get_message(post_id):
         )
         return await cur.fetchone()
 
-
 async def get_post(post_id):
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
@@ -76,7 +71,6 @@ async def get_post(post_id):
             (post_id,)
         )
         return await cur.fetchone()
-
 
 async def get_history(user_id):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -93,6 +87,20 @@ async def get_history(user_id):
         )
         return await cur.fetchall()
 
+# ─── GET DRAFTS ──────────────────────────────
+async def get_drafts(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT id, caption, status
+            FROM posts
+            WHERE user_id = ? AND status = 'draft'
+            ORDER BY id DESC
+            """,
+            (user_id,)
+        )
+        return await cur.fetchall()
 
 # ─── UPDATE ───────────────────────────────────
 async def update_text(post_id, text):
@@ -103,7 +111,6 @@ async def update_text(post_id, text):
         )
         await db.commit()
 
-
 async def set_status(post_id, status):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
@@ -111,7 +118,6 @@ async def set_status(post_id, status):
             (status, post_id)
         )
         await db.commit()
-
 
 async def set_job(post_id, job_id):
     async with aiosqlite.connect(DB_NAME) as db:
