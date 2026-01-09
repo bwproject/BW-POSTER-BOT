@@ -6,10 +6,7 @@ import uuid
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ContentType
 from aiogram.filters import Command
-from aiogram.types import (
-    Message, CallbackQuery,
-    InlineKeyboardButton, InlineKeyboardMarkup
-)
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
@@ -43,29 +40,26 @@ dp = Dispatcher()
 def split_text(text: str):
     return [text[i:i + MAX_TEXT] for i in range(0, len(text), MAX_TEXT)]
 
-
 def group_keyboard(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton("MrMes", callback_data=f"group:{post_id}:mrmes"),
-            InlineKeyboardButton("ProjectBW", callback_data=f"group:{post_id}:projectbw"),
-            InlineKeyboardButton("Помойка", callback_data=f"group:{post_id}:dump")
+            InlineKeyboardButton(text="MrMes", callback_data=f"group:{post_id}:mrmes"),
+            InlineKeyboardButton(text="ProjectBW", callback_data=f"group:{post_id}:projectbw"),
+            InlineKeyboardButton(text="Помойка", callback_data=f"group:{post_id}:dump")
         ],
         [
-            InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit:{post_id}"),
-            InlineKeyboardButton("❌ Отменить", callback_data=f"cancel:{post_id}")
+            InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit:{post_id}"),
+            InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel:{post_id}")
         ]
     ])
-
 
 def start_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton("📜 История", callback_data="history_cmd"),
-            InlineKeyboardButton("📝 Черновики", callback_data="drafts_cmd")
+            InlineKeyboardButton(text="📜 История", callback_data="history_cmd"),
+            InlineKeyboardButton(text="📝 Черновики", callback_data="drafts_cmd")
         ]
     ])
-
 
 # ─── START ────────────────────────────────────
 @dp.message(Command("start"))
@@ -75,18 +69,15 @@ async def start(msg: Message):
         reply_markup=start_keyboard()
     )
 
-
 # ─── ИСТОРИЯ ──────────────────────────────────
 @dp.message(Command("history"))
 async def history(msg: Message):
     await send_history(msg.from_user.id, msg)
 
-
 @dp.callback_query(F.data == "history_cmd")
 async def history_cb(cb: CallbackQuery):
     await send_history(cb.from_user.id, cb.message)
     await cb.answer()
-
 
 async def send_history(user_id, target):
     posts = await get_history(user_id)
@@ -98,18 +89,15 @@ async def send_history(user_id, target):
         text += f"🆔 {p['id']} | {p['status']}\n{(p['caption'] or '')[:60]}\n\n"
     await target.answer(text)
 
-
 # ─── ДРЕФТЫ ─────────────────────────────────
 @dp.message(Command("drafts"))
 async def show_drafts(msg: Message):
     await send_drafts(msg.from_user.id, msg)
 
-
 @dp.callback_query(F.data == "drafts_cmd")
 async def drafts_cb(cb: CallbackQuery):
     await send_drafts(cb.from_user.id, cb.message)
     await cb.answer()
-
 
 async def send_drafts(user_id, target):
     posts = await get_history(user_id)
@@ -122,10 +110,9 @@ async def send_drafts(user_id, target):
     kb_buttons = []
     for p in drafts:
         text += f"🆔 {p['id']} | {(p['caption'] or '')[:50]}...\n"
-        kb_buttons.append([InlineKeyboardButton(f"Выбрать {p['id']}", callback_data=f"draft:{p['id']}")])
+        kb_buttons.append([InlineKeyboardButton(text=f"Выбрать {p['id']}", callback_data=f"draft:{p['id']}")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await target.answer(text, reply_markup=kb)
-
 
 # ─── ВЫБОР ЧЕРНОВИКА ─────────────────────────
 @dp.callback_query(F.data.startswith("draft:"))
@@ -133,7 +120,6 @@ async def choose_draft(cb: CallbackQuery):
     post_id = int(cb.data.split(":")[1])
     await cb.message.edit_text("Выбери действие:", reply_markup=group_keyboard(post_id))
     await cb.answer()
-
 
 # ─── ПОЛУЧЕНИЕ ПОСТА ──────────────────────────
 @dp.message()
@@ -157,7 +143,6 @@ async def receive_post(msg: Message):
         reply_markup=group_keyboard(post_id)
     )
 
-
 # ─── РЕДАКТИРОВАНИЕ ───────────────────────────
 @dp.callback_query(F.data.startswith("edit:"))
 async def edit_post(cb: CallbackQuery, state: FSMContext):
@@ -166,7 +151,6 @@ async def edit_post(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer("✏️ Пришли новый текст")
     await state.set_state(EditPost.waiting_text)
     await cb.answer()
-
 
 @dp.message(EditPost.waiting_text)
 async def save_new_text(msg: Message, state: FSMContext):
@@ -179,7 +163,6 @@ async def save_new_text(msg: Message, state: FSMContext):
     log.info(f"Текст обновлён post_id={post_id}")
     await state.clear()
     await msg.answer("✅ Текст обновлён")
-
 
 # ─── ОТМЕНА ───────────────────────────────────
 @dp.callback_query(F.data.startswith("cancel:"))
@@ -195,21 +178,18 @@ async def cancel_post(cb: CallbackQuery):
     await cb.message.edit_text("❌ Публикация отменена")
     await cb.answer()
 
-
 # ─── ВЫБОР ГРУППЫ ─────────────────────────────
 @dp.callback_query(F.data.startswith("group:"))
 async def choose_group(cb: CallbackQuery, state: FSMContext):
     _, post_id, group = cb.data.split(":")
-    # Кнопки для "сейчас" или "выбрать дату/время"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton("📤 Сейчас", callback_data=f"now:{post_id}:{group}"),
-            InlineKeyboardButton("⏰ Выбрать дату/время", callback_data=f"delay_select:{post_id}:{group}")
+            InlineKeyboardButton(text="📤 Сейчас", callback_data=f"now:{post_id}:{group}"),
+            InlineKeyboardButton(text="⏰ Выбрать дату/время", callback_data=f"delay_select:{post_id}:{group}")
         ]
     ])
     await cb.message.edit_text("Когда публикуем?", reply_markup=kb)
     await cb.answer()
-
 
 # ─── ВЫБОР ВРЕМЕНИ ─────────────────────────────
 @dp.callback_query(F.data.startswith("delay_select:"))
@@ -219,7 +199,6 @@ async def ask_datetime(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer("⏰ Пришли время публикации в формате ЧЧ:ММ")
     await state.set_state(WaitTime.waiting)
     await cb.answer()
-
 
 @dp.message(WaitTime.waiting)
 async def schedule_custom_time(msg: Message, state: FSMContext):
@@ -252,7 +231,6 @@ async def schedule_custom_time(msg: Message, state: FSMContext):
     await msg.answer(f"✅ Запланировано на {run_at.strftime('%d.%m.%Y %H:%M')}")
     await state.clear()
 
-
 # ─── СЕЙЧАС ───────────────────────────────────
 @dp.callback_query(F.data.startswith("now:"))
 async def post_now(cb: CallbackQuery):
@@ -260,7 +238,6 @@ async def post_now(cb: CallbackQuery):
     await publish(post_id, group)
     await cb.message.edit_text("✅ Опубликовано")
     await cb.answer()
-
 
 # ─── ПУБЛИКАЦИЯ ───────────────────────────────
 async def publish(post_id: int, group: str):
@@ -279,19 +256,17 @@ async def publish(post_id: int, group: str):
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id}")
 
-
 # ─── SMART SEND ───────────────────────────────
 async def smart_send(target, source_chat, msg_id, text, content_type):
     parts = split_text(text)
 
-    # Текст
     if content_type == ContentType.TEXT:
         for p in parts:
             await bot.send_message(target, p)
         await bot.send_message(target, POST_FOOTER)
         return
 
-    # Медиа (фото/видео/голос)
+    # медиа
     await bot.copy_message(
         chat_id=target,
         from_chat_id=source_chat,
@@ -300,10 +275,7 @@ async def smart_send(target, source_chat, msg_id, text, content_type):
     )
     for p in parts[1:]:
         await bot.send_message(target, p)
-
-    # подпись всегда вторым сообщением
-    await bot.send_message(target, POST_FOOTER)
-
+    await bot.send_message(target, POST_FOOTER)  # подпись вторым сообщением
 
 # ─── MAIN ─────────────────────────────────────
 async def main():
@@ -311,7 +283,6 @@ async def main():
     await init_db()
     start_scheduler()
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
