@@ -2,8 +2,8 @@
 
 import asyncio
 import logging
-import uuid
 import os
+import uuid
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
@@ -13,7 +13,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
-from config import BOT_TOKEN, GROUPS, POST_FOOTER, MAX_TEXT
+from config import BOT_TOKEN, GROUPS, POST_FOOTER, MAX_TEXT, TEMP_DIR
 from db import (
     init_db, save_message, get_post, get_history, update_text,
     set_status, set_job, get_drafts, set_target_chat
@@ -34,10 +34,6 @@ class EditPost(StatesGroup):
 # ─── BOT ──────────────────────────────────────
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
-
-# ─── TEMP ─────────────────────────────────────
-TEMP_DIR = "./temp"
-os.makedirs(TEMP_DIR, exist_ok=True)
 
 # ─── ВСПОМОГАТЕЛЬНО ───────────────────────────
 def split_text(text: str):
@@ -76,24 +72,24 @@ def schedule_keyboard(post_id: int):
 # ─── ЗАГРУЗКА МЕДИА ───────────────────────────
 async def download_media(msg: Message):
     """Сохраняет медиа в TEMP_DIR и возвращает путь к файлу"""
+    os.makedirs(TEMP_DIR, exist_ok=True)
+
     if msg.content_type == ContentType.PHOTO:
-        file_id = msg.photo[-1].file_id
-        ext = ".jpg"
+        file_path = os.path.join(TEMP_DIR, f"{msg.message_id}.jpg")
+        await msg.photo[-1].download(destination=file_path)
     elif msg.content_type == ContentType.VIDEO:
-        file_id = msg.video.file_id
-        ext = ".mp4"
+        file_path = os.path.join(TEMP_DIR, f"{msg.message_id}.mp4")
+        await msg.video.download(destination=file_path)
     elif msg.content_type == ContentType.VOICE:
-        file_id = msg.voice.file_id
-        ext = ".ogg"
+        file_path = os.path.join(TEMP_DIR, f"{msg.message_id}.ogg")
+        await msg.voice.download(destination=file_path)
     elif msg.content_type == ContentType.DOCUMENT:
-        file_id = msg.document.file_id
         ext = os.path.splitext(msg.document.file_name)[1]
+        file_path = os.path.join(TEMP_DIR, f"{msg.message_id}{ext}")
+        await msg.document.download(destination=file_path)
     else:
         return None
 
-    file_path = os.path.join(TEMP_DIR, f"{msg.message_id}{ext}")
-    file = await bot.get_file(file_id)
-    await bot.download(file.file_path, destination=file_path)
     log.info(f"Медиа сохранено: {file_path}")
     return file_path
 
@@ -110,19 +106,15 @@ async def start(msg: Message):
 @dp.message()
 async def receive_post(msg: Message):
     log.info(f"Получен пост type={msg.content_type}")
-
     text = msg.text or msg.caption or ""
-    post_id = await save_message(msg.from_user.id, msg.chat.id, msg.message_id, text, msg.content_type)
-    await set_status(post_id, "draft")
+    file_path = await download_media(msg)
 
-    # Сохраняем медиа, если есть
-    if msg.content_type in (ContentType.PHOTO, ContentType.VIDEO, ContentType.VOICE, ContentType.DOCUMENT):
-        file_path = await download_media(msg)
-        if not file_path:
-            log.warning(f"Не удалось скачать медиа post_id={post_id}")
+    post_id = await save_message(msg.from_user.id, msg.chat.id, msg.message_id, text, msg.content_type, file_path=file_path)
+    await set_status(post_id, "draft")
 
     await msg.answer("Выбери действие:", reply_markup=group_keyboard(post_id))
 
+# ─── ИСТОРИЯ ─────────────────────────────────
 @dp.callback_query(F.data == "show_history")
 async def show_history(cb: CallbackQuery):
     posts = await get_history(cb.from_user.id)
@@ -138,6 +130,7 @@ async def show_history(cb: CallbackQuery):
     await cb.message.answer(text)
     await cb.answer()
 
+# ─── ЧЕРНОВИКИ ───────────────────────────────
 @dp.callback_query(F.data == "show_drafts")
 async def show_drafts_cb(cb: CallbackQuery):
     drafts = await get_drafts(cb.from_user.id)
@@ -193,7 +186,6 @@ async def choose_group(cb: CallbackQuery):
         return
 
     await set_target_chat(post_id, target_chat_id)
-
     kb = schedule_keyboard(post_id)
     await cb.message.edit_text(f"Когда публикуем в {group_name}?", reply_markup=kb)
     await cb.answer()
@@ -227,53 +219,29 @@ async def publish(post_id):
         return
 
     target_chat_id = post["target_chat_id"] or post["chat_id"]
+    text = post["caption"] or ""
 
-    # 1. Сообщение об успешной отправке в боте
+    # Сообщение об успешной отправке в боте
     await bot.send_message(post["chat_id"], "✅ Пост успешно отправлен")
 
-    # 2. Отправка поста с подписью в канал
-    file_path = os.path.join(TEMP_DIR, f"{post_id}")
-    await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"])
+    # Публикация медиа + подписи
+    if post.get("file_path") and os.path.exists(post["file_path"]):
+        file_path = post["file_path"]
+        if post["content_type"] == ContentType.PHOTO:
+            await bot.send_photo(target_chat_id, photo=open(file_path, "rb"), caption=f"{text}\n\n{POST_FOOTER}")
+        elif post["content_type"] == ContentType.VIDEO:
+            await bot.send_video(target_chat_id, video=open(file_path, "rb"), caption=f"{text}\n\n{POST_FOOTER}")
+        elif post["content_type"] == ContentType.VOICE:
+            await bot.send_voice(target_chat_id, voice=open(file_path, "rb"), caption=f"{text}\n\n{POST_FOOTER}")
+        elif post["content_type"] == ContentType.DOCUMENT:
+            await bot.send_document(target_chat_id, document=open(file_path, "rb"), caption=f"{text}\n\n{POST_FOOTER}")
+    else:
+        # fallback на текст, если файл не найден
+        await bot.send_message(target_chat_id, f"{text}\n\n{POST_FOOTER}")
+        log.warning(f"Файл для post_id={post_id} не найден, отправляем текст")
 
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
-
-# ─── SMART SEND ───────────────────────────────
-async def smart_send(target, source_chat, msg_id, text, content_type, include_footer=True):
-    full_text = f"{text}\n\n{POST_FOOTER}" if include_footer else text
-    parts = [full_text[i:i + MAX_TEXT] for i in range(0, len(full_text), MAX_TEXT)]
-
-    # Определяем путь к файлу
-    file_path = None
-    if content_type in (ContentType.PHOTO, ContentType.VIDEO, ContentType.VOICE, ContentType.DOCUMENT):
-        # ищем файл в TEMP_DIR
-        for ext in [".jpg", ".mp4", ".ogg", ".pdf"]:
-            temp_file = os.path.join(TEMP_DIR, f"{msg_id}{ext}")
-            if os.path.exists(temp_file):
-                file_path = temp_file
-                break
-        if not file_path:
-            log.warning(f"Файл для post_id={msg_id} не найден, отправляем текст")
-
-    # Отправка текстового контента
-    if content_type == ContentType.TEXT or file_path is None:
-        for p in parts:
-            await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
-        return
-
-    # Отправка медиа с подписью
-    if content_type == ContentType.PHOTO:
-        await bot.send_photo(target, photo=open(file_path, "rb"), caption=parts[0], parse_mode="HTML")
-    elif content_type == ContentType.VIDEO:
-        await bot.send_video(target, video=open(file_path, "rb"), caption=parts[0], parse_mode="HTML")
-    elif content_type == ContentType.VOICE:
-        await bot.send_voice(target, voice=open(file_path, "rb"), caption=parts[0], parse_mode="HTML")
-    elif content_type == ContentType.DOCUMENT:
-        await bot.send_document(target, document=open(file_path, "rb"), caption=parts[0], parse_mode="HTML")
-
-    # Отправка остального текста
-    for p in parts[1:]:
-        await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
 
 # ─── MAIN ─────────────────────────────────────
 async def main():
