@@ -168,7 +168,6 @@ async def choose_group(cb: CallbackQuery):
 async def schedule_post(cb: CallbackQuery):
     _, post_id, minutes = cb.data.split(":")
     post_id, minutes = int(post_id), int(minutes)
-    post = await get_post(post_id)
 
     run_at = datetime.now() + timedelta(minutes=minutes)
     await set_status(post_id, "scheduled")
@@ -192,18 +191,21 @@ async def publish(post_id):
     if post["status"] == "cancelled":
         return
 
-    target_chat_id = post["target_chat_id"]
-    if not target_chat_id:
-        # если группа не выбрана, отправляем обратно автору
-        target_chat_id = post["chat_id"]
+    target_chat_id = post["target_chat_id"] or post["chat_id"]
 
-    await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"])
+    # 1. Сообщение об успешной отправке
+    await bot.send_message(target_chat_id, "✅ Пост успешно отправлен")
+
+    # 2. Сам пост с футером
+    await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=True)
+
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
 
+
 # ─── SMART SEND ───────────────────────────────
-async def smart_send(target, source_chat, msg_id, text, content_type):
-    full_text = f"{text}\n\n{POST_FOOTER}"
+async def smart_send(target, source_chat, msg_id, text, content_type, include_footer=True):
+    full_text = f"{text}\n\n{POST_FOOTER}" if include_footer else text
     parts = [full_text[i:i + MAX_TEXT] for i in range(0, len(full_text), MAX_TEXT)]
 
     if content_type == ContentType.TEXT:
@@ -220,6 +222,7 @@ async def smart_send(target, source_chat, msg_id, text, content_type):
     )
     for p in parts[1:]:
         await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
+
 
 # ─── MAIN ─────────────────────────────────────
 async def main():
