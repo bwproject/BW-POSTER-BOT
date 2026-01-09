@@ -1,61 +1,80 @@
 import asyncio
+import logging
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, InlineKeyboardButton, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.filters.text import Text
 
 from config import BOT_TOKEN, GROUPS, ADMINS
 from db import init_db, save_message, get_message, update_caption
-from scheduler import scheduler
+from scheduler import scheduler, start_scheduler
+from logger import setup_logger
 
+# =======================
+# ЛОГГЕР
+# =======================
+logger = setup_logger()
+log = logging.getLogger("BOT")
+
+# =======================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# =======================
-# /start
+
 # =======================
 @dp.message(CommandStart())
 async def start_handler(msg: Message):
-    await msg.answer(
-        "Привет! Отправь мне сообщение, а я предложу куда и когда его запостить."
-    )
+    log.info(f"/start от user_id={msg.from_user.id}")
+    await msg.answer("Отправь сообщение для постинга")
 
 
-# =======================
-# Проверка доступа
 # =======================
 def is_admin(user_id: int) -> bool:
     return user_id in ADMINS
 
 
 # =======================
-# Ловим любое сообщение
-# =======================
 @dp.message()
 async def catch_message(msg: Message):
     if not is_admin(msg.from_user.id):
-        await msg.reply("❌ У тебя нет доступа к постингу.")
+        log.warning(f"Отказ доступа user_id={msg.from_user.id}")
+        await msg.reply("❌ Нет доступа")
         return
 
-    post_id = await save_message(msg.from_user.id, msg.chat.id, msg.message_id, msg.text)
+    log.info(
+        f"Получено сообщение "
+        f"type={msg.content_type} "
+        f"user_id={msg.from_user.id} "
+        f"message_id={msg.message_id}"
+    )
+
+    post_id = await save_message(
+        msg.from_user.id,
+        msg.chat.id,
+        msg.message_id,
+        msg.text
+    )
 
     kb = InlineKeyboardBuilder()
-    for name in GROUPS.keys():
-        kb.add(InlineKeyboardButton(text=f"📢 {name}", callback_data=f"group:{post_id}:{name}"))
+    for name in GROUPS:
+        kb.add(
+            InlineKeyboardButton(
+                text=f"📢 {name}",
+                callback_data=f"group:{post_id}:{name}"
+            )
+        )
     kb.adjust(1)
 
-    await msg.answer("Выбери группу для постинга:", reply_markup=kb.as_markup())
+    await msg.answer("Куда постить?", reply_markup=kb.as_markup())
 
 
-# =======================
-# Выбор группы
 # =======================
 @dp.callback_query(F.data.startswith("group:"))
 async def group_choose(cb: CallbackQuery):
     _, post_id, group_name = cb.data.split(":")
+    log.info(f"Выбрана группа {group_name} post_id={post_id}")
 
     kb = InlineKeyboardBuilder()
     kb.add(
@@ -63,35 +82,41 @@ async def group_choose(cb: CallbackQuery):
         InlineKeyboardButton(text="⏰ По времени", callback_data=f"manual:{post_id}:{group_name}")
     )
 
-    await cb.message.edit_text(f"Когда постить в «{group_name}»?", reply_markup=kb.as_markup())
+    await cb.message.edit_text(
+        f"Когда постить в «{group_name}»?",
+        reply_markup=kb.as_markup()
+    )
 
 
-# =======================
-# Немедленный пост
 # =======================
 @dp.callback_query(F.data.startswith("now:"))
 async def post_now(cb: CallbackQuery):
     _, post_id, group_name = cb.data.split(":")
-    chat_id, message_id, caption = await get_message(int(post_id))
+    chat_id, message_id, _ = await get_message(int(post_id))
 
-    await bot.copy_message(chat_id=GROUPS[group_name], from_chat_id=chat_id, message_id=message_id)
-    await cb.message.edit_text("✅ Сообщение опубликовано")
+    await bot.copy_message(
+        chat_id=GROUPS[group_name],
+        from_chat_id=chat_id,
+        message_id=message_id
+    )
+
+    log.info(f"ПОСТ ОТПРАВЛЕН СРАЗУ post_id={post_id} group={group_name}")
+    await cb.message.edit_text("✅ Опубликовано")
 
 
-# =======================
-# Ввод времени вручную
 # =======================
 @dp.callback_query(F.data.startswith("manual:"))
-async def post_manual(cb: CallbackQuery):
+async def manual_time(cb: CallbackQuery):
     _, post_id, group_name = cb.data.split(":")
+    log.info(f"Запрос времени post_id={post_id}")
+
     await cb.message.edit_text(
-        "📅 Введи дату и время в формате YYYY-MM-DD HH:MM (например, 2026-01-09 18:30)"
+        "Введите дату и время:\nYYYY-MM-DD HH:MM"
     )
 
     dp.register_message_handler(
         lambda msg: manual_time_handler(msg, post_id, group_name),
-        F.from_user.id == cb.from_user.id,
-        state=None
+        F.from_user.id == cb.from_user.id
     )
 
 
@@ -99,22 +124,8 @@ async def manual_time_handler(msg: Message, post_id, group_name):
     try:
         dt = datetime.strptime(msg.text, "%Y-%m-%d %H:%M")
     except ValueError:
-        await msg.reply("❌ Неверный формат. Попробуй ещё раз.")
+        await msg.reply("❌ Неверный формат")
         return
-
-    # редактирование текста перед постом
-    await msg.answer("✏️ Если хочешь изменить текст перед постом, отправь новый текст. Иначе пришли '.'")
-    dp.register_message_handler(
-        lambda m: edit_caption_handler(m, post_id, group_name, dt),
-        F.from_user.id == msg.from_user.id,
-        state=None
-    )
-
-
-async def edit_caption_handler(msg: Message, post_id, group_name, dt: datetime):
-    if msg.text != ".":
-        await update_caption(post_id, msg.text)
-    chat_id, message_id, caption = await get_message(int(post_id))
 
     scheduler.add_job(
         bot.copy_message,
@@ -122,20 +133,24 @@ async def edit_caption_handler(msg: Message, post_id, group_name, dt: datetime):
         run_date=dt,
         kwargs={
             "chat_id": GROUPS[group_name],
-            "from_chat_id": chat_id,
-            "message_id": message_id
+            "from_chat_id": msg.chat.id,
+            "message_id": (await get_message(int(post_id)))[1]
         }
     )
 
-    await msg.answer(f"⏳ Сообщение запланировано на {dt.strftime('%Y-%m-%d %H:%M')}")
+    log.info(
+        f"ПОСТ ЗАПЛАНИРОВАН post_id={post_id} "
+        f"group={group_name} time={dt}"
+    )
+
+    await msg.answer(f"⏳ Запланировано на {dt}")
 
 
-# =======================
-# Запуск
 # =======================
 async def main():
+    log.info("=== БОТ ЗАПУСКАЕТСЯ ===")
     await init_db()
-    scheduler.start()
+    start_scheduler()
     await dp.start_polling(bot)
 
 
