@@ -1,4 +1,4 @@
-#db.py
+#db.py (не удалять нужен для ftp) https://github.com/bwproject/BW-POSTER-BOT/edit/main/db.py
 
 import aiosqlite
 import logging
@@ -16,6 +16,7 @@ async def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             chat_id INTEGER,
+            target_chat_id INTEGER,
             message_id INTEGER,
             caption TEXT,
             content_type TEXT,
@@ -126,5 +127,14 @@ async def set_job(post_id, job_id):
         await db.execute(
             "UPDATE posts SET job_id = ? WHERE id = ?",
             (job_id, post_id)
+        )
+        await db.commit()
+
+# ─── SET TARGET CHAT ─────────────────────────
+async def set_target_chat(post_id, chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE posts SET target_chat_id = ? WHERE id = ?",
+            (chat_id, post_id)
         )
         await db.commit()
