@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import uuid
+import os
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
@@ -34,7 +35,14 @@ class EditPost(StatesGroup):
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
+# ─── TEMP ─────────────────────────────────────
+TEMP_DIR = "temp"
+os.makedirs(TEMP_DIR, exist_ok=True)
+
 # ─── ВСПОМОГАТЕЛЬНО ───────────────────────────
+def split_text(text: str):
+    return [text[i:i + MAX_TEXT] for i in range(0, len(text), MAX_TEXT)]
+
 def group_keyboard(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -65,6 +73,20 @@ def schedule_keyboard(post_id: int):
         ]
     ])
 
+async def download_media(msg: Message):
+    """Сохраняет медиа в temp/ и возвращает путь к файлу"""
+    if msg.content_type == ContentType.PHOTO:
+        file = await msg.photo[-1].download(destination_dir=TEMP_DIR)
+    elif msg.content_type == ContentType.VIDEO:
+        file = await msg.video.download(destination_dir=TEMP_DIR)
+    elif msg.content_type == ContentType.VOICE:
+        file = await msg.voice.download(destination_dir=TEMP_DIR)
+    elif msg.content_type == ContentType.DOCUMENT:
+        file = await msg.document.download(destination_dir=TEMP_DIR)
+    else:
+        return None
+    return file.name
+
 # ─── START ────────────────────────────────────
 @dp.message(Command("start"))
 async def start(msg: Message):
@@ -80,8 +102,18 @@ async def receive_post(msg: Message):
     log.info(f"Получен пост type={msg.content_type}")
 
     text = msg.text or msg.caption or ""
-    post_id = await save_message(msg.from_user.id, msg.chat.id, msg.message_id, text, msg.content_type)
+    file_path = None
+    if msg.content_type in [ContentType.PHOTO, ContentType.VIDEO, ContentType.VOICE, ContentType.DOCUMENT]:
+        file_path = await download_media(msg)
+
+    post_id = await save_message(
+        msg.from_user.id, msg.chat.id, msg.message_id, text, msg.content_type
+    )
     await set_status(post_id, "draft")
+
+    # Сохраняем путь к файлу в БД (если нужно, можно добавить колонку media_path)
+    if file_path:
+        await update_text(post_id, f"{text}|{file_path}")  # simple hack, разделяем текст и путь
 
     await msg.answer("Выбери действие:", reply_markup=group_keyboard(post_id))
 
@@ -190,38 +222,44 @@ async def publish(post_id):
 
     target_chat_id = post["target_chat_id"] or post["chat_id"]
 
-    # 1️⃣ Отправка в канал/группу с футером
-    await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=True)
+    # Разделяем текст и путь к файлу
+    text, file_path = None, None
+    if "|" in (post["caption"] or ""):
+        text, file_path = post["caption"].split("|", 1)
+    else:
+        text = post["caption"]
 
-    # 2️⃣ Сообщение автору и копия поста без футера
+    # 1. Сообщение об успешной отправке боту
     await bot.send_message(post["chat_id"], "✅ Пост успешно отправлен")
-    await smart_send(post["chat_id"], post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=False)
+
+    # 2. Отправка самого поста в канал
+    await smart_send(target_chat_id, text, post["content_type"], file_path=file_path, include_footer=True)
+
+    # 3. Отправка копии поста боту без футера
+    await smart_send(post["chat_id"], text, post["content_type"], file_path=file_path, include_footer=False)
 
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
 
 # ─── SMART SEND ───────────────────────────────
-async def smart_send(target, source_chat, msg_id, text, content_type, include_footer=True):
-    """
-    Отправка текста или медиа:
-    - Для текста: разбиваем на части и добавляем футер при публикации.
-    - Для медиа: копируем сообщение с caption, добавляем футер только к caption.
-    """
+async def smart_send(target, text, content_type, file_path=None, include_footer=True):
+    full_text = f"{text}\n\n{POST_FOOTER}" if include_footer else text
+
     if content_type == ContentType.TEXT:
-        full_text = f"{text}\n\n{POST_FOOTER}" if include_footer and text else text
-        parts = [full_text[i:i + MAX_TEXT] for i in range(0, len(full_text), MAX_TEXT)]
+        parts = split_text(full_text)
         for p in parts:
             await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
-    else:
-        # Медиа-контент (фото, видео, голосовые, аудио, документы, видео заметки)
-        caption = f"{text}\n\n{POST_FOOTER}" if include_footer and text else text
-        await bot.copy_message(
-            chat_id=target,
-            from_chat_id=source_chat,
-            message_id=msg_id,
-            caption=caption,
-            parse_mode="HTML"
-        )
+        return
+
+    # Для медиа
+    if content_type == ContentType.PHOTO:
+        await bot.send_photo(target, photo=open(file_path, "rb"), caption=full_text)
+    elif content_type == ContentType.VIDEO:
+        await bot.send_video(target, video=open(file_path, "rb"), caption=full_text)
+    elif content_type == ContentType.VOICE:
+        await bot.send_voice(target, voice=open(file_path, "rb"), caption=full_text)
+    elif content_type == ContentType.DOCUMENT:
+        await bot.send_document(target, document=open(file_path, "rb"), caption=full_text)
 
 # ─── MAIN ─────────────────────────────────────
 async def main():
