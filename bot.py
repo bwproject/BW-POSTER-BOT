@@ -2,26 +2,22 @@
 
 import asyncio
 import logging
-import os
 import uuid
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ContentType, ParseMode
+from aiogram.enums import ContentType
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
-from config import BOT_TOKEN, GROUPS, POST_FOOTER, MAX_TEXT
+from config import BOT_TOKEN, GROUPS, POST_FOOTER
 from db import (
     init_db, save_message, get_post, get_history, update_text,
-    set_status, set_job, get_drafts, set_target_chat, update_file_path
+    set_status, set_job, get_drafts, set_target_chat
 )
 from scheduler import scheduler, start_scheduler
-
-TEMP_DIR = "temp"
-os.makedirs(TEMP_DIR, exist_ok=True)
 
 # ─── ЛОГИ ─────────────────────────────
 logging.basicConfig(
@@ -38,7 +34,7 @@ class EditPost(StatesGroup):
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# ─── ВСПОМОГАТЕЛЬНО ──────────────────
+# ─── КНОПКИ ──────────────────────────
 def group_keyboard(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -69,20 +65,6 @@ def schedule_keyboard(post_id: int):
         ]
     ])
 
-# ─── ЗАГРУЗКА МЕДИА ──────────────────
-async def download_media(msg: Message):
-    file_path = None
-    if msg.content_type == ContentType.PHOTO:
-        file = msg.photo[-1]  # берём самый большой размер
-        file_info = await bot.get_file(file.file_id)
-        file_path = os.path.join(TEMP_DIR, f"{file.file_id}.jpg")
-        await bot.download(file_info.file_path, destination=file_path)
-    elif msg.content_type == ContentType.VIDEO:
-        file_info = await bot.get_file(msg.video.file_id)
-        file_path = os.path.join(TEMP_DIR, f"{msg.video.file_id}.mp4")
-        await bot.download(file_info.file_path, destination=file_path)
-    return file_path
-
 # ─── START ───────────────────────────
 @dp.message(Command("start"))
 async def start(msg: Message):
@@ -97,14 +79,8 @@ async def start(msg: Message):
 async def receive_post(msg: Message):
     log.info(f"Получен пост type={msg.content_type}")
     text = msg.text or msg.caption or ""
+
     post_id = await save_message(msg.from_user.id, msg.chat.id, msg.message_id, text, msg.content_type)
-
-    file_path = None
-    if msg.content_type in [ContentType.PHOTO, ContentType.VIDEO]:
-        file_path = await download_media(msg)
-        if file_path:
-            await update_file_path(post_id, file_path)
-
     await set_status(post_id, "draft")
     await msg.answer("Выбери действие:", reply_markup=group_keyboard(post_id))
 
@@ -177,43 +153,40 @@ async def publish(post_id):
 
     target_chat_id = post["target_chat_id"] or post["chat_id"]
     text = post["caption"] or ""
+    full_caption = f"{text}\n\n{POST_FOOTER}" if text else POST_FOOTER
 
     # Сообщение автору
     await bot.send_message(
         post["chat_id"], 
         "✅ Пост успешно отправлен", 
-        parse_mode=ParseMode.HTML, 
+        parse_mode="HTML", 
         disable_web_page_preview=True
     )
 
-    # Если текст — просто отправляем
     if post["content_type"] == ContentType.TEXT:
-        full_text = f"{text}\n\n{POST_FOOTER}"
+        # Текст поста
         await bot.send_message(
-            target_chat_id, 
-            full_text, 
-            parse_mode=ParseMode.HTML, 
+            target_chat_id,
+            full_caption,
+            parse_mode="HTML",
             disable_web_page_preview=True
         )
     else:
-        # Всё остальное пересылаем через copy_message (скрытый автор) с подписью
-        caption = f"{text}\n\n{POST_FOOTER}" if text else POST_FOOTER
+        # Всё остальное пересылаем
         try:
             await bot.copy_message(
                 chat_id=target_chat_id,
                 from_chat_id=post["chat_id"],
                 message_id=post["message_id"],
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
+                caption=full_caption,
+                parse_mode="HTML"
             )
         except Exception as e:
             log.warning(f"Не удалось переслать post_id={post_id}: {e}")
-            # fallback — просто текст
             await bot.send_message(
-                target_chat_id, 
-                caption, 
-                parse_mode=ParseMode.HTML, 
+                target_chat_id,
+                full_caption,
+                parse_mode="HTML",
                 disable_web_page_preview=True
             )
 
