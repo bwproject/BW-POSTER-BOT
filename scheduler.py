@@ -7,5 +7,6 @@ scheduler = AsyncIOScheduler()
 
 
 def start_scheduler():
-    scheduler.start()
-    log.info("Планировщик запущен")
+    if not scheduler.running:
+        scheduler.start()
+        log.info("Планировщик запущен")
