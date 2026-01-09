@@ -22,6 +22,7 @@ async def init_db():
             content_type TEXT,
             status TEXT,
             job_id TEXT,
+            file_path TEXT,          -- новая колонка для сохранённых файлов
             created_at TEXT
         )
         """)
@@ -59,7 +60,7 @@ async def get_message(post_id):
     async with aiosqlite.connect(DB_NAME) as db:
         cur = await db.execute(
             """
-            SELECT chat_id, message_id, caption, content_type
+            SELECT chat_id, message_id, caption, content_type, file_path
             FROM posts WHERE id = ?
             """,
             (post_id,)
@@ -136,5 +137,15 @@ async def set_target_chat(post_id, chat_id):
         await db.execute(
             "UPDATE posts SET target_chat_id = ? WHERE id = ?",
             (chat_id, post_id)
+        )
+        await db.commit()
+
+# ─── UPDATE FILE PATH ─────────────────────────
+async def update_file_path(post_id, file_path):
+    log.info(f"Обновление пути к файлу post_id={post_id}, file_path={file_path}")
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE posts SET file_path = ? WHERE id = ?",
+            (file_path, post_id)
         )
         await db.commit()
