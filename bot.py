@@ -35,8 +35,8 @@ class EditPost(StatesGroup):
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# ─── TEMP ────────────────────────────────────
-TEMP_DIR = "temp"
+# ─── TEMP ─────────────────────────────────────
+TEMP_DIR = "./temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 # ─── ВСПОМОГАТЕЛЬНО ───────────────────────────
@@ -73,6 +73,30 @@ def schedule_keyboard(post_id: int):
         ]
     ])
 
+# ─── ЗАГРУЗКА МЕДИА ───────────────────────────
+async def download_media(msg: Message):
+    """Сохраняет медиа в TEMP_DIR и возвращает путь к файлу"""
+    if msg.content_type == ContentType.PHOTO:
+        file_id = msg.photo[-1].file_id
+        ext = ".jpg"
+    elif msg.content_type == ContentType.VIDEO:
+        file_id = msg.video.file_id
+        ext = ".mp4"
+    elif msg.content_type == ContentType.VOICE:
+        file_id = msg.voice.file_id
+        ext = ".ogg"
+    elif msg.content_type == ContentType.DOCUMENT:
+        file_id = msg.document.file_id
+        ext = os.path.splitext(msg.document.file_name)[1]
+    else:
+        return None
+
+    file_path = os.path.join(TEMP_DIR, f"{msg.message_id}{ext}")
+    file = await bot.get_file(file_id)
+    await bot.download(file.file_path, destination=file_path)
+    log.info(f"Медиа сохранено: {file_path}")
+    return file_path
+
 # ─── START ────────────────────────────────────
 @dp.message(Command("start"))
 async def start(msg: Message):
@@ -82,34 +106,20 @@ async def start(msg: Message):
     ])
     await msg.answer("Пришли пост для публикации", reply_markup=kb)
 
-# ─── ЗАГРУЗКА МЕДИА ──────────────────────────
-async def download_media(msg: Message):
-    """Сохраняет медиа в temp/ и возвращает путь к файлу"""
-    if msg.content_type == ContentType.PHOTO:
-        file_id = msg.photo[-1].file_id
-    elif msg.content_type == ContentType.VIDEO:
-        file_id = msg.video.file_id
-    elif msg.content_type == ContentType.VOICE:
-        file_id = msg.voice.file_id
-    elif msg.content_type == ContentType.DOCUMENT:
-        file_id = msg.document.file_id
-    else:
-        return None
-
-    file_path = os.path.join(TEMP_DIR, f"{file_id}")
-    await bot.download(file_id, destination=file_path)
-    return file_path
-
 # ─── ПОСТЫ И ЧЕРНОВИКИ ───────────────────────
 @dp.message()
 async def receive_post(msg: Message):
     log.info(f"Получен пост type={msg.content_type}")
 
     text = msg.text or msg.caption or ""
-    media_path = await download_media(msg)
-
     post_id = await save_message(msg.from_user.id, msg.chat.id, msg.message_id, text, msg.content_type)
     await set_status(post_id, "draft")
+
+    # Сохраняем медиа, если есть
+    if msg.content_type in (ContentType.PHOTO, ContentType.VIDEO, ContentType.VOICE, ContentType.DOCUMENT):
+        file_path = await download_media(msg)
+        if not file_path:
+            log.warning(f"Не удалось скачать медиа post_id={post_id}")
 
     await msg.answer("Выбери действие:", reply_markup=group_keyboard(post_id))
 
@@ -218,11 +228,12 @@ async def publish(post_id):
 
     target_chat_id = post["target_chat_id"] or post["chat_id"]
 
-    # 1. Сообщение об успешной отправке в бота
+    # 1. Сообщение об успешной отправке в боте
     await bot.send_message(post["chat_id"], "✅ Пост успешно отправлен")
 
-    # 2. Отправляем сам пост в канал
-    await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"], include_footer=True)
+    # 2. Отправка поста с подписью в канал
+    file_path = os.path.join(TEMP_DIR, f"{post_id}")
+    await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"])
 
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
@@ -232,28 +243,35 @@ async def smart_send(target, source_chat, msg_id, text, content_type, include_fo
     full_text = f"{text}\n\n{POST_FOOTER}" if include_footer else text
     parts = [full_text[i:i + MAX_TEXT] for i in range(0, len(full_text), MAX_TEXT)]
 
-    if content_type == ContentType.TEXT:
+    # Определяем путь к файлу
+    file_path = None
+    if content_type in (ContentType.PHOTO, ContentType.VIDEO, ContentType.VOICE, ContentType.DOCUMENT):
+        # ищем файл в TEMP_DIR
+        for ext in [".jpg", ".mp4", ".ogg", ".pdf"]:
+            temp_file = os.path.join(TEMP_DIR, f"{msg_id}{ext}")
+            if os.path.exists(temp_file):
+                file_path = temp_file
+                break
+        if not file_path:
+            log.warning(f"Файл для post_id={msg_id} не найден, отправляем текст")
+
+    # Отправка текстового контента
+    if content_type == ContentType.TEXT or file_path is None:
         for p in parts:
             await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
         return
 
-    # Для медиа берем файл из temp
-    media_path = os.path.join(TEMP_DIR, str(msg_id))
-    if not os.path.exists(media_path):
-        log.warning(f"Файл для post_id={msg_id} не найден, отправляем текст")
-        for p in parts:
-            await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
-        return
-
+    # Отправка медиа с подписью
     if content_type == ContentType.PHOTO:
-        await bot.send_photo(target, open(media_path, "rb"), caption=parts[0] if parts else None)
+        await bot.send_photo(target, photo=open(file_path, "rb"), caption=parts[0], parse_mode="HTML")
     elif content_type == ContentType.VIDEO:
-        await bot.send_video(target, open(media_path, "rb"), caption=parts[0] if parts else None)
+        await bot.send_video(target, video=open(file_path, "rb"), caption=parts[0], parse_mode="HTML")
     elif content_type == ContentType.VOICE:
-        await bot.send_voice(target, open(media_path, "rb"), caption=parts[0] if parts else None)
+        await bot.send_voice(target, voice=open(file_path, "rb"), caption=parts[0], parse_mode="HTML")
     elif content_type == ContentType.DOCUMENT:
-        await bot.send_document(target, open(media_path, "rb"), caption=parts[0] if parts else None)
+        await bot.send_document(target, document=open(file_path, "rb"), caption=parts[0], parse_mode="HTML")
 
+    # Отправка остального текста
     for p in parts[1:]:
         await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
 
