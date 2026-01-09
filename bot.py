@@ -13,14 +13,13 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
 from config import BOT_TOKEN, GROUPS, SIGNATURE, MAX_TEXT
 from db import (
     init_db, save_message, get_message,
     update_text, set_status, set_job,
     get_history, get_post
 )
+from scheduler import scheduler, start_scheduler
 
 # ─── ЛОГИ ─────────────────────────────────────
 logging.basicConfig(
@@ -34,13 +33,9 @@ log = logging.getLogger("BOT")
 class EditPost(StatesGroup):
     waiting_text = State()
 
-class SchedulePost(StatesGroup):
-    waiting_time = State()
-
 # ─── BOT ──────────────────────────────────────
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler()
 
 
 # ─── ВСПОМОГАТЕЛЬНО ───────────────────────────
@@ -79,10 +74,7 @@ async def history(msg: Message):
 
     text = "📊 История постов:\n\n"
     for p in posts:
-        text += (
-            f"🆔 {p['id']} | {p['status']}\n"
-            f"{(p['caption'] or '')[:50]}\n\n"
-        )
+        text += f"🆔 {p['id']} | {p['status']}\n{(p['caption'] or '')[:60]}\n\n"
 
     await msg.answer(text)
 
@@ -127,8 +119,9 @@ async def save_new_text(msg: Message, state: FSMContext):
     post_id = data["post_id"]
 
     await update_text(post_id, msg.text)
-    log.info(f"Текст обновлён post_id={post_id}")
+    await set_status(post_id, "draft")
 
+    log.info(f"Текст обновлён post_id={post_id}")
     await state.clear()
     await msg.answer("✅ Текст обновлён")
 
@@ -161,11 +154,11 @@ async def choose_group(cb: CallbackQuery):
         ]
     ])
 
-    await cb.message.edit_text("Когда публием?", reply_markup=kb)
+    await cb.message.edit_text("Когда публикуем?", reply_markup=kb)
     await cb.answer()
 
 
-# ─── ОТПРАВКА СЕЙЧАС ──────────────────────────
+# ─── СЕЙЧАС ───────────────────────────────────
 @dp.callback_query(F.data.startswith("now:"))
 async def post_now(cb: CallbackQuery):
     _, post_id, group = cb.data.split(":")
@@ -175,7 +168,7 @@ async def post_now(cb: CallbackQuery):
     await cb.answer()
 
 
-# ─── ОТПРАВКА С ЗАДЕРЖКОЙ ─────────────────────
+# ─── С ЗАДЕРЖКОЙ ──────────────────────────────
 @dp.callback_query(F.data.startswith("delay:"))
 async def post_delay(cb: CallbackQuery):
     _, post_id, group = cb.data.split(":")
@@ -205,19 +198,12 @@ async def publish(post_id: int, group: str):
     if post["status"] == "cancelled":
         return
 
-    chat_id, msg_id, text, content_type = (
+    await smart_send(
+        GROUPS[group],
         post["chat_id"],
         post["message_id"],
         post["caption"],
         post["content_type"]
-    )
-
-    await smart_send(
-        GROUPS[group],
-        chat_id,
-        msg_id,
-        text,
-        content_type
     )
 
     await set_status(post_id, "posted")
@@ -227,7 +213,6 @@ async def publish(post_id: int, group: str):
 # ─── SMART SEND ───────────────────────────────
 async def smart_send(target, source_chat, msg_id, text, content_type):
     parts = split_text(text)
-    voice_video = content_type in (ContentType.VOICE, ContentType.VIDEO_NOTE)
 
     if content_type == ContentType.TEXT:
         for p in parts:
@@ -252,8 +237,7 @@ async def smart_send(target, source_chat, msg_id, text, content_type):
 async def main():
     log.info("=== BOT STARTED ===")
     await init_db()
-
-    scheduler.start()
+    start_scheduler()
     await dp.start_polling(bot)
 
 
