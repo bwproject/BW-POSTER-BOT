@@ -11,12 +11,12 @@ ADMINS = [
 ]
 
 POST_FOOTER = """
-Спасибо что вы с нами 🤍
-Так же посмотрите другие наши группы:
-
-The_Mr_Mes109 | https://t.me/tg_themrmes109
-ProjectBW | https://t.me/projectbw_news
-Помойка Mes`a | https://t.me/+WiiYWMVryB1kNDQy
+Спасибо что вы с нами 🤍<br>
+Так же посмотрите другие наши группы:<br><br>
+<u><b><a href="https://t.me/tg_themrmes109">The_Mr_Mes109</a></b></u><br>
+<u><b><a href="https://t.me/projectbw_news">ProjectBW</a></b></u><br>
+<u><b><a href="https://t.me/+WiiYWMVryB1kNDQy">Помойка Mes`a</a></b></u>
 """.strip()
+
 
 MAX_TEXT = 3800
