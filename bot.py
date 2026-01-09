@@ -1,22 +1,19 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
 import uuid
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ContentType
 from aiogram.filters import Command
-from aiogram.types import (
-    Message, CallbackQuery,
-    InlineKeyboardButton, InlineKeyboardMarkup
-)
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 from config import BOT_TOKEN, GROUPS, POST_FOOTER, MAX_TEXT
 from db import (
-    init_db, save_message, get_message, update_text,
-    set_status, set_job, get_history, get_post, get_drafts
+    init_db, save_message, get_post, get_history, update_text,
+    set_status, set_job, get_drafts
 )
 from scheduler import scheduler, start_scheduler
 
@@ -45,98 +42,87 @@ def split_text(text: str):
 def group_keyboard(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="MrMes", callback_data=f"group:{post_id}:The_Mr_Mes109"),
-            InlineKeyboardButton(text="ProjectBW", callback_data=f"group:{post_id}:ProjectBW"),
-            InlineKeyboardButton(text="Помойка", callback_data=f"group:{post_id}:Trash")
+            InlineKeyboardButton("The_Mr_Mes109", callback_data=f"group:{post_id}:The_Mr_Mes109"),
+            InlineKeyboardButton("ProjectBW", callback_data=f"group:{post_id}:ProjectBW"),
+            InlineKeyboardButton("Помойка", callback_data=f"group:{post_id}:Trash")
         ],
         [
-            InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit:{post_id}"),
-            InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel:{post_id}")
+            InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit:{post_id}"),
+            InlineKeyboardButton("❌ Отменить", callback_data=f"cancel:{post_id}")
         ]
     ])
 
 
-def schedule_keyboard(post_id: int, group: str):
+def schedule_keyboard(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Сейчас", callback_data=f"now:{post_id}:{group}"),
-            InlineKeyboardButton(text="+5 мин", callback_data=f"delay:{post_id}:{group}:5")
+            InlineKeyboardButton("Сейчас", callback_data=f"schedule:{post_id}:0"),
+            InlineKeyboardButton("+5 мин", callback_data=f"schedule:{post_id}:5"),
+            InlineKeyboardButton("+10 мин", callback_data=f"schedule:{post_id}:10")
         ],
         [
-            InlineKeyboardButton(text="+10 мин", callback_data=f"delay:{post_id}:{group}:10"),
-            InlineKeyboardButton(text="+20 мин", callback_data=f"delay:{post_id}:{group}:20")
+            InlineKeyboardButton("+20 мин", callback_data=f"schedule:{post_id}:20"),
+            InlineKeyboardButton("+30 мин", callback_data=f"schedule:{post_id}:30"),
+            InlineKeyboardButton("+60 мин", callback_data=f"schedule:{post_id}:60")
         ],
         [
-            InlineKeyboardButton(text="+30 мин", callback_data=f"delay:{post_id}:{group}:30"),
-            InlineKeyboardButton(text="+60 мин", callback_data=f"delay:{post_id}:{group}:60")
-        ],
-        [
-            InlineKeyboardButton(text="Выбрать дату/время", callback_data=f"pick_datetime:{post_id}:{group}")
+            InlineKeyboardButton("Выбрать дату/время", callback_data=f"schedule_custom:{post_id}")
         ]
-    ])
-
-
-def start_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="История", callback_data="show_history")],
-        [InlineKeyboardButton(text="Черновики", callback_data="show_drafts")]
     ])
 
 
 # ─── START ────────────────────────────────────
 @dp.message(Command("start"))
 async def start(msg: Message):
-    await msg.answer("Пришли пост для публикации", reply_markup=start_keyboard())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("История", callback_data="show_history")],
+        [InlineKeyboardButton("Черновики", callback_data="show_drafts")]
+    ])
+    await msg.answer("Пришли пост для публикации", reply_markup=kb)
 
 
-# ─── ИСТОРИЯ ──────────────────────────────────
-@dp.message(Command("history"))
-async def history(msg: Message):
-    posts = await get_history(msg.from_user.id)
+# ─── ПОСТЫ И ЧЕРНОВИКИ ───────────────────────
+@dp.message()
+async def receive_post(msg: Message):
+    log.info(f"Получен пост type={msg.content_type}")
+
+    text = msg.text or msg.caption or ""
+    post_id = await save_message(msg.from_user.id, msg.chat.id, msg.message_id, text, msg.content_type)
+    await set_status(post_id, "draft")
+
+    await msg.answer("Выбери действие:", reply_markup=group_keyboard(post_id))
+
+
+@dp.callback_query(F.data == "show_history")
+async def show_history(cb: CallbackQuery):
+    posts = await get_history(cb.from_user.id)
     if not posts:
-        await msg.answer("История пуста")
+        await cb.message.answer("История пуста")
+        await cb.answer()
         return
 
     text = "📊 История постов:\n\n"
     for p in posts:
         text += f"🆔 {p['id']} | {p['status']}\n{(p['caption'] or '')[:60]}\n\n"
-    await msg.answer(text)
 
-
-# ─── ЧЕРНОВИКИ ───────────────────────────────
-@dp.callback_query(F.data == "show_drafts")
-async def show_drafts(cb: CallbackQuery):
-    posts = await get_drafts(cb.from_user.id)
-    if not posts:
-        await cb.message.answer("Черновиков нет")
-        await cb.answer()
-        return
-
-    for p in posts:
-        await cb.message.answer(
-            f"🆔 {p['id']}\n{p['caption']}",
-            reply_markup=group_keyboard(p['id'])
-        )
+    await cb.message.answer(text)
     await cb.answer()
 
 
-# ─── ПОЛУЧЕНИЕ ПОСТА ──────────────────────────
-@dp.message()
-async def receive_post(msg: Message):
-    log.info(f"Получен пост type={msg.content_type}")
-    text = (msg.text or msg.caption or "") + "\n\n" + POST_FOOTER
+@dp.callback_query(F.data == "show_drafts")
+async def show_drafts_cb(cb: CallbackQuery):
+    drafts = await get_drafts(cb.from_user.id)
+    if not drafts:
+        await cb.message.answer("Черновики пусты")
+        await cb.answer()
+        return
 
-    post_id = await save_message(
-        msg.from_user.id,
-        msg.chat.id,
-        msg.message_id,
-        text,
-        msg.content_type
-    )
-
-    await set_status(post_id, "draft")
-
-    await msg.answer("Выбери действие:", reply_markup=group_keyboard(post_id))
+    for d in drafts:
+        await cb.message.answer(
+            f"🆔 {d['id']} | {d['status']}\n{(d['caption'] or '')[:60]}",
+            reply_markup=group_keyboard(d['id'])
+        )
+    await cb.answer()
 
 
 # ─── РЕДАКТИРОВАНИЕ ───────────────────────────
@@ -153,9 +139,7 @@ async def edit_post(cb: CallbackQuery, state: FSMContext):
 async def save_new_text(msg: Message, state: FSMContext):
     data = await state.get_data()
     post_id = data["post_id"]
-    text = msg.text + "\n\n" + POST_FOOTER
-
-    await update_text(post_id, text)
+    await update_text(post_id, msg.text)
     await set_status(post_id, "draft")
     log.info(f"Текст обновлён post_id={post_id}")
     await state.clear()
@@ -166,11 +150,6 @@ async def save_new_text(msg: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("cancel:"))
 async def cancel_post(cb: CallbackQuery):
     post_id = int(cb.data.split(":")[1])
-    post = await get_post(post_id)
-
-    if post["status"] == "scheduled" and post["job_id"]:
-        scheduler.remove_job(post["job_id"])
-
     await set_status(post_id, "cancelled")
     log.info(f"Пост отменён post_id={post_id}")
     await cb.message.edit_text("❌ Публикация отменена")
@@ -181,62 +160,64 @@ async def cancel_post(cb: CallbackQuery):
 @dp.callback_query(F.data.startswith("group:"))
 async def choose_group(cb: CallbackQuery):
     _, post_id, group = cb.data.split(":")
-    await cb.message.edit_text(
-        "Когда публикуем?",
-        reply_markup=schedule_keyboard(post_id, group)
-    )
+    kb = schedule_keyboard(post_id)
+    await cb.message.edit_text(f"Когда публикуем в {group}?", reply_markup=kb)
     await cb.answer()
 
 
-# ─── ПУБЛИКАЦИЯ ───────────────────────────────
-@dp.callback_query(F.data.startswith("now:"))
-async def post_now(cb: CallbackQuery):
-    _, post_id, group = cb.data.split(":")
-    await publish(int(post_id), group)
-    await cb.message.edit_text("✅ Опубликовано")
-    await cb.answer()
+# ─── ПЛАНИРОВАНИЕ ────────────────────────────
+@dp.callback_query(F.data.startswith("schedule:"))
+async def schedule_post(cb: CallbackQuery):
+    _, post_id, minutes = cb.data.split(":")
+    post_id, minutes = int(post_id), int(minutes)
+    post = await get_post(post_id)
 
-
-@dp.callback_query(F.data.startswith("delay:"))
-async def post_delay(cb: CallbackQuery):
-    _, post_id, group, minutes = cb.data.split(":")
-    minutes = int(minutes)
-    job_id = str(uuid.uuid4())
     run_at = datetime.now() + timedelta(minutes=minutes)
+    await set_status(post_id, "scheduled")
 
+    job_id = str(uuid.uuid4())
     scheduler.add_job(
         publish,
         trigger="date",
         run_date=run_at,
-        args=(int(post_id), group),
+        args=(post_id, post['caption'], post['content_type'], post['chat_id']),
         id=job_id
     )
+    await set_job(post_id, job_id)
 
-    await set_job(int(post_id), job_id)
-    await set_status(int(post_id), "scheduled")
-    log.info(f"Пост запланирован post_id={post_id} через {minutes} минут")
-    await cb.message.edit_text(f"⏰ Запланировано через {minutes} минут")
+    await cb.message.edit_text(f"⏰ Пост запланирован через {minutes} мин")
     await cb.answer()
 
 
-async def publish(post_id: int, group: str):
+# ─── ПУБЛИКАЦИЯ ───────────────────────────────
+async def publish(post_id, text, content_type, chat_id):
     post = await get_post(post_id)
     if post["status"] == "cancelled":
         return
-
-    # если текст, то уже содержит подпись
-    if post["content_type"] == ContentType.TEXT:
-        await bot.send_message(group_id := GROUPS[group], text=post["caption"])
-    else:
-        await bot.copy_message(
-            chat_id=GROUPS[group],
-            from_chat_id=post["chat_id"],
-            message_id=post["message_id"],
-            caption=post["caption"]
-        )
-
+    await smart_send(chat_id, chat_id, post_id, text, content_type)
     await set_status(post_id, "posted")
-    log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в {group}")
+    log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id}")
+
+
+# ─── SMART SEND ───────────────────────────────
+async def smart_send(target, source_chat, msg_id, text, content_type):
+    full_text = f"{text}\n\n{POST_FOOTER}"
+    parts = [full_text[i:i + MAX_TEXT] for i in range(0, len(full_text), MAX_TEXT)]
+
+    if content_type == ContentType.TEXT:
+        for p in parts:
+            await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
+        return
+
+    await bot.copy_message(
+        chat_id=target,
+        from_chat_id=source_chat,
+        message_id=msg_id,
+        caption=parts[0] if parts else None,
+        parse_mode="HTML"
+    )
+    for p in parts[1:]:
+        await bot.send_message(target, p, parse_mode="HTML", disable_web_page_preview=True)
 
 
 # ─── MAIN ─────────────────────────────────────
