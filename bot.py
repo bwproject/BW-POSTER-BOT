@@ -6,7 +6,10 @@ import uuid
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ContentType
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    Message, CallbackQuery,
+    InlineKeyboardButton, InlineKeyboardMarkup
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
@@ -14,7 +17,7 @@ from config import BOT_TOKEN, GROUPS, POST_FOOTER, MAX_TEXT
 from db import (
     init_db, save_message, get_message,
     update_text, set_status, set_job,
-    get_history, get_post
+    get_history, get_post, get_drafts
 )
 from scheduler import scheduler, start_scheduler
 
@@ -29,8 +32,10 @@ log = logging.getLogger("BOT")
 class EditPost(StatesGroup):
     waiting_text = State()
 
-class WaitTime(StatesGroup):
-    waiting = State()
+class SchedulePost(StatesGroup):
+    waiting_datetime = State()
+    post_id = State()
+    group = State()
 
 # ─── BOT ──────────────────────────────────────
 bot = Bot(BOT_TOKEN)
@@ -40,115 +45,90 @@ dp = Dispatcher()
 def split_text(text: str):
     return [text[i:i + MAX_TEXT] for i in range(0, len(text), MAX_TEXT)]
 
-def append_footer(text: str):
-    if text:
-        return f"{text}\n\n{POST_FOOTER}"
-    return POST_FOOTER
-
 def group_keyboard(post_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="MrMes", callback_data=f"group:{post_id}:The_Mr_Mes109"),
-            InlineKeyboardButton(text="ProjectBW", callback_data=f"group:{post_id}:ProjectBW"),
-            InlineKeyboardButton(text="Помойка", callback_data=f"group:{post_id}:Помойка")
+            InlineKeyboardButton("MrMes", callback_data=f"group:{post_id}:The_Mr_Mes109"),
+            InlineKeyboardButton("ProjectBW", callback_data=f"group:{post_id}:ProjectBW"),
+            InlineKeyboardButton("Помойка", callback_data=f"group:{post_id}:Помойка")
         ],
         [
-            InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit:{post_id}"),
-            InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel:{post_id}")
-        ]
-    ])
-
-def start_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📜 История", callback_data="history_cmd"),
-            InlineKeyboardButton(text="📝 Черновики", callback_data="drafts_cmd")
+            InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit:{post_id}"),
+            InlineKeyboardButton("❌ Отменить", callback_data=f"cancel:{post_id}")
         ]
     ])
 
 def schedule_keyboard(post_id: int, group: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="+5 мин", callback_data=f"delay:{post_id}:{group}:5"),
-            InlineKeyboardButton(text="+10 мин", callback_data=f"delay:{post_id}:{group}:10"),
-            InlineKeyboardButton(text="+20 мин", callback_data=f"delay:{post_id}:{group}:20")
+            InlineKeyboardButton("Сейчас", callback_data=f"schedule:{post_id}:{group}:0"),
+            InlineKeyboardButton("+5 мин", callback_data=f"schedule:{post_id}:{group}:5"),
+            InlineKeyboardButton("+10 мин", callback_data=f"schedule:{post_id}:{group}:10")
         ],
         [
-            InlineKeyboardButton(text="+30 мин", callback_data=f"delay:{post_id}:{group}:30"),
-            InlineKeyboardButton(text="+60 мин", callback_data=f"delay:{post_id}:{group}:60")
+            InlineKeyboardButton("+20 мин", callback_data=f"schedule:{post_id}:{group}:20"),
+            InlineKeyboardButton("+30 мин", callback_data=f"schedule:{post_id}:{group}:30"),
+            InlineKeyboardButton("+60 мин", callback_data=f"schedule:{post_id}:{group}:60")
         ],
         [
-            InlineKeyboardButton(text="Выбрать дату/время", callback_data=f"delay_select:{post_id}:{group}")
+            InlineKeyboardButton("Выбрать дату/время", callback_data=f"choose_datetime:{post_id}:{group}")
         ]
     ])
 
 # ─── START ────────────────────────────────────
 @dp.message(Command("start"))
 async def start(msg: Message):
-    await msg.answer(
-        "Привет! Пришли пост для публикации.",
-        reply_markup=start_keyboard()
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("/history", callback_data="history")],
+        [InlineKeyboardButton("/drafts", callback_data="drafts")]
+    ])
+    await msg.answer("Пришли пост для публикации", reply_markup=kb)
 
-# ─── ИСТОРИЯ ──────────────────────────────────
+# ─── HISTORY ──────────────────────────────────
+@dp.callback_query(F.data == "history")
 @dp.message(Command("history"))
-async def history(msg: Message):
-    await send_history(msg.from_user.id, msg)
-
-@dp.callback_query(F.data == "history_cmd")
-async def history_cb(cb: CallbackQuery):
-    await send_history(cb.from_user.id, cb.message)
-    await cb.answer()
-
-async def send_history(user_id, target):
+async def history(msg_or_cb):
+    user_id = msg_or_cb.from_user.id
     posts = await get_history(user_id)
     if not posts:
-        await target.answer("История пуста")
-        return
-    text = "📊 История постов:\n\n"
-    for p in posts:
-        text += f"🆔 {p['id']} | {p['status']}\n{(p['caption'] or '')[:60]}\n\n"
-    await target.answer(text)
+        text = "История пуста"
+    else:
+        text = "📊 История постов:\n\n"
+        for p in posts:
+            text += f"🆔 {p['id']} | {p['status']}\n{(p['caption'] or '')[:60]}\n\n"
 
-# ─── ДРЕФТЫ ─────────────────────────────────
+    if isinstance(msg_or_cb, Message):
+        await msg_or_cb.answer(text)
+    else:
+        await msg_or_cb.message.answer(text)
+        await msg_or_cb.answer()
+
+# ─── DRAFTS ──────────────────────────────────
+@dp.callback_query(F.data == "drafts")
 @dp.message(Command("drafts"))
-async def show_drafts(msg: Message):
-    await send_drafts(msg.from_user.id, msg)
+async def drafts(msg_or_cb):
+    user_id = msg_or_cb.from_user.id
+    posts = await get_drafts(user_id)
+    if not posts:
+        text = "Черновики пусты"
+    else:
+        text = "📝 Черновики:\n\n"
+        for p in posts:
+            text += f"🆔 {p['id']}\n{(p['caption'] or '')[:60]}\n\n"
 
-@dp.callback_query(F.data == "drafts_cmd")
-async def drafts_cb(cb: CallbackQuery):
-    await send_drafts(cb.from_user.id, cb.message)
-    await cb.answer()
+    if isinstance(msg_or_cb, Message):
+        await msg_or_cb.answer(text)
+    else:
+        await msg_or_cb.message.answer(text)
+        await msg_or_cb.answer()
 
-async def send_drafts(user_id, target):
-    posts = await get_history(user_id)
-    drafts = [p for p in posts if p['status'] == 'draft']
-    if not drafts:
-        await target.answer("Нет черновиков")
-        return
-
-    text = "📂 Черновики:\n\n"
-    kb_buttons = []
-    for p in drafts:
-        text += f"🆔 {p['id']} | {(p['caption'] or '')[:50]}...\n"
-        kb_buttons.append([InlineKeyboardButton(text=f"Выбрать {p['id']}", callback_data=f"draft:{p['id']}")])
-    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
-    await target.answer(text, reply_markup=kb)
-
-# ─── ВЫБОР ЧЕРНОВИКА ─────────────────────────
-@dp.callback_query(F.data.startswith("draft:"))
-async def choose_draft(cb: CallbackQuery):
-    post_id = int(cb.data.split(":")[1])
-    await cb.message.edit_text("Выбери действие:", reply_markup=group_keyboard(post_id))
-    await cb.answer()
-
-# ─── ПОЛУЧЕНИЕ ПОСТА ──────────────────────────
+# ─── RECEIVE POST ───────────────────────────
 @dp.message()
 async def receive_post(msg: Message):
     log.info(f"Получен пост type={msg.content_type}")
-
     text = msg.text or msg.caption or ""
-    text = append_footer(text)  # подпись сразу в текст
+    if text:
+        text += "\n\n" + POST_FOOTER
 
     post_id = await save_message(
         msg.from_user.id,
@@ -157,15 +137,14 @@ async def receive_post(msg: Message):
         text,
         msg.content_type
     )
-
     await set_status(post_id, "draft")
 
     await msg.answer(
-        f"Пост сохранён как черновик 📝 (id={post_id})\nВыбери действие, когда будешь готов:",
+        "Выбери действие:",
         reply_markup=group_keyboard(post_id)
     )
 
-# ─── РЕДАКТИРОВАНИЕ ───────────────────────────
+# ─── EDIT POST ───────────────────────────────
 @dp.callback_query(F.data.startswith("edit:"))
 async def edit_post(cb: CallbackQuery, state: FSMContext):
     post_id = int(cb.data.split(":")[1])
@@ -178,156 +157,97 @@ async def edit_post(cb: CallbackQuery, state: FSMContext):
 async def save_new_text(msg: Message, state: FSMContext):
     data = await state.get_data()
     post_id = data["post_id"]
-
-    text = append_footer(msg.text)  # подпись сразу при редактировании
+    text = msg.text + "\n\n" + POST_FOOTER
     await update_text(post_id, text)
     await set_status(post_id, "draft")
-
     log.info(f"Текст обновлён post_id={post_id}")
     await state.clear()
     await msg.answer("✅ Текст обновлён")
 
-# ─── ОТМЕНА ───────────────────────────────────
+# ─── CANCEL POST ─────────────────────────────
 @dp.callback_query(F.data.startswith("cancel:"))
 async def cancel_post(cb: CallbackQuery):
     post_id = int(cb.data.split(":")[1])
     post = await get_post(post_id)
-
-    if post["status"] == "scheduled" and post["job_id"]:
+    if post["status"] == "scheduled" and post.get("job_id"):
         scheduler.remove_job(post["job_id"])
-
     await set_status(post_id, "cancelled")
     log.info(f"Пост отменён post_id={post_id}")
     await cb.message.edit_text("❌ Публикация отменена")
     await cb.answer()
 
-# ─── ВЫБОР ГРУППЫ ─────────────────────────────
+# ─── CHOOSE GROUP ───────────────────────────
 @dp.callback_query(F.data.startswith("group:"))
 async def choose_group(cb: CallbackQuery):
     _, post_id, group = cb.data.split(":")
-    kb = schedule_keyboard(post_id, group)
-    await cb.message.edit_text("Когда публикуем?", reply_markup=kb)
-    await cb.answer()
-
-# ─── ПЛАНИРОВАНИЕ ПО ВРЕМЕНИ ─────────────────
-@dp.callback_query(F.data.startswith("delay:"))
-async def schedule_quick(cb: CallbackQuery):
-    _, post_id, group, minutes = cb.data.split(":")
-    run_at = datetime.now() + timedelta(minutes=int(minutes))
-    
-    job_id = str(uuid.uuid4())
-    scheduler.add_job(
-        publish,
-        trigger="date",
-        run_date=run_at,
-        args=(int(post_id), group),
-        id=job_id
+    await cb.message.edit_text(
+        "Когда публикуем?",
+        reply_markup=schedule_keyboard(post_id, group)
     )
-
-    await set_job(post_id, job_id)
-    await set_status(post_id, "scheduled")
-    log.info(f"Пост запланирован post_id={post_id} на {run_at}")
-    await cb.message.edit_text(f"✅ Запланировано на {run_at.strftime('%d.%m.%Y %H:%M')}")
     await cb.answer()
 
-# ─── ВЫБОР ДАТЫ/ВРЕМЕНИ ─────────────────────
-def calendar_keyboard(year: int, month: int):
-    from calendar import monthrange
-    kb = []
-    # дни недели
-    week_days = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]
-    kb.append([InlineKeyboardButton(d, callback_data="ignore") for d in week_days])
+# ─── SCHEDULE / NOW ─────────────────────────
+@dp.callback_query(F.data.startswith("schedule:"))
+async def schedule_post_cb(cb: CallbackQuery):
+    _, post_id, group, minutes = cb.data.split(":")
+    minutes = int(minutes)
+    if minutes == 0:
+        await publish(int(post_id), group)
+        await cb.message.edit_text("✅ Опубликовано")
+    else:
+        job_id = str(uuid.uuid4())
+        run_at = datetime.now() + timedelta(minutes=minutes)
+        scheduler.add_job(
+            publish,
+            trigger="date",
+            run_date=run_at,
+            args=(int(post_id), group),
+            id=job_id
+        )
+        await set_job(int(post_id), job_id)
+        await set_status(int(post_id), "scheduled")
+        log.info(f"Пост запланирован post_id={post_id} на {run_at}")
+        await cb.message.edit_text(f"⏰ Запланировано через {minutes} мин")
+    await cb.answer()
 
-    num_days = monthrange(year, month)[1]
-    first_weekday = datetime(year, month, 1).weekday()
-
-    row = []
-    for _ in range(first_weekday):
-        row.append(InlineKeyboardButton(" ", callback_data="ignore"))
-
-    for day in range(1, num_days +1):
-        row.append(InlineKeyboardButton(str(day), callback_data=f"day:{day}:{month}:{year}"))
-        if len(row) == 7:
-            kb.append(row)
-            row = []
-    if row: kb.append(row)
-
-    kb.append([
-        InlineKeyboardButton("«", callback_data=f"prev_month:{month}:{year}"),
-        InlineKeyboardButton("»", callback_data=f"next_month:{month}:{year}")
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=kb)
-
-@dp.callback_query(F.data.startswith("delay_select:"))
+# ─── CHOOSE DATE/TIME ───────────────────────
+@dp.callback_query(F.data.startswith("choose_datetime:"))
 async def ask_datetime(cb: CallbackQuery, state: FSMContext):
     _, post_id, group = cb.data.split(":")
-    await state.update_data(post_id=post_id, group=group)
-    now = datetime.now()
-    kb = calendar_keyboard(now.year, now.month)
-    await cb.message.answer("Выбери день публикации:", reply_markup=kb)
-    await state.set_state(WaitTime.waiting)
+    await state.update_data(post_id=int(post_id), group=group)
+    await cb.message.answer("⏳ Пришли дату и время в формате: YYYY-MM-DD HH:MM")
+    await state.set_state(SchedulePost.waiting_datetime)
     await cb.answer()
 
-@dp.callback_query(F.data.startswith("day:"))
-async def choose_day(cb: CallbackQuery, state: FSMContext):
-    _, day, month, year = cb.data.split(":")
-    day, month, year = int(day), int(month), int(year)
+@dp.message(SchedulePost.waiting_datetime)
+async def schedule_by_datetime(msg: Message, state: FSMContext):
     data = await state.get_data()
     post_id = data["post_id"]
     group = data["group"]
-    await state.update_data(day=day, month=month, year=year)
-
-    # выбор часа
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(f"{h:02d}", callback_data=f"time:{h}") for h in range(0,24,3)],
-        [InlineKeyboardButton(f"{h:02d}", callback_data=f"time:{h}") for h in range(1,24,3)],
-        [InlineKeyboardButton(f"{h:02d}", callback_data=f"time:{h}") for h in range(2,24,3)]
-    ])
-    await cb.message.answer("Выбери час публикации:", reply_markup=kb)
-    await cb.answer()
-
-@dp.callback_query(F.data.startswith("time:"))
-async def choose_hour(cb: CallbackQuery, state: FSMContext):
-    hour = int(cb.data.split(":")[1])
-    data = await state.get_data()
-    day, month, year = data["day"], data["month"], data["year"]
-    post_id = data["post_id"]
-    group = data["group"]
-
-    run_at = datetime(year, month, day, hour, 0)
-    if run_at < datetime.now():
-        await cb.message.answer("Нельзя выбрать прошлое время. Попробуй снова.")
+    try:
+        dt = datetime.strptime(msg.text, "%Y-%m-%d %H:%M")
+    except:
+        await msg.answer("❌ Неверный формат! Используй YYYY-MM-DD HH:MM")
         return
-
     job_id = str(uuid.uuid4())
     scheduler.add_job(
         publish,
         trigger="date",
-        run_date=run_at,
+        run_date=dt,
         args=(post_id, group),
         id=job_id
     )
-
     await set_job(post_id, job_id)
     await set_status(post_id, "scheduled")
-    log.info(f"Пост запланирован post_id={post_id} на {run_at}")
-    await cb.message.edit_text(f"✅ Запланировано на {run_at.strftime('%d.%m.%Y %H:%M')}")
     await state.clear()
-    await cb.answer()
+    log.info(f"Пост запланирован post_id={post_id} на {dt}")
+    await msg.answer(f"✅ Запланировано на {dt}")
 
-# ─── ПУБЛИКАЦИЯ ───────────────────────────────
-@dp.callback_query(F.data.startswith("now:"))
-async def post_now(cb: CallbackQuery):
-    _, post_id, group = cb.data.split(":")
-    await publish(post_id, group)
-    await cb.message.edit_text("✅ Опубликовано")
-    await cb.answer()
-
+# ─── PUBLISH ────────────────────────────────
 async def publish(post_id: int, group: str):
     post = await get_post(post_id)
     if post["status"] == "cancelled":
         return
-
     await smart_send(
         GROUPS[group],
         post["chat_id"],
@@ -335,18 +255,16 @@ async def publish(post_id: int, group: str):
         post["caption"],
         post["content_type"]
     )
-
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id}")
 
+# ─── SMART SEND ─────────────────────────────
 async def smart_send(target, source_chat, msg_id, text, content_type):
     parts = split_text(text)
-
     if content_type == ContentType.TEXT:
         for p in parts:
             await bot.send_message(target, p)
         return
-
     await bot.copy_message(
         chat_id=target,
         from_chat_id=source_chat,
@@ -356,7 +274,7 @@ async def smart_send(target, source_chat, msg_id, text, content_type):
     for p in parts[1:]:
         await bot.send_message(target, p)
 
-# ─── MAIN ─────────────────────────────────────
+# ─── MAIN ───────────────────────────────────
 async def main():
     log.info("=== BOT STARTED ===")
     await init_db()
