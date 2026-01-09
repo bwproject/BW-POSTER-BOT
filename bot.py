@@ -20,7 +20,6 @@ from db import (
 )
 from scheduler import scheduler, start_scheduler
 
-# ─── TEMP DIR ─────────────────────────────
 TEMP_DIR = "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
@@ -73,18 +72,15 @@ def schedule_keyboard(post_id: int):
 # ─── ЗАГРУЗКА МЕДИА ──────────────────
 async def download_media(msg: Message):
     file_path = None
-
     if msg.content_type == ContentType.PHOTO:
         file = msg.photo[-1]  # берём самый большой размер
         file_info = await bot.get_file(file.file_id)
         file_path = os.path.join(TEMP_DIR, f"{file.file_id}.jpg")
         await bot.download(file_info.file_path, destination=file_path)
-
     elif msg.content_type == ContentType.VIDEO:
         file_info = await bot.get_file(msg.video.file_id)
         file_path = os.path.join(TEMP_DIR, f"{msg.video.file_id}.mp4")
         await bot.download(file_info.file_path, destination=file_path)
-
     return file_path
 
 # ─── START ───────────────────────────
@@ -94,19 +90,15 @@ async def start(msg: Message):
         [InlineKeyboardButton(text="История", callback_data="show_history")],
         [InlineKeyboardButton(text="Черновики", callback_data="show_drafts")]
     ])
-    await msg.answer("Пришли пост для публикации", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await msg.answer("Пришли пост для публикации", reply_markup=kb)
 
 # ─── ПОЛУЧЕНИЕ ПОСТОВ ───────────────
 @dp.message()
 async def receive_post(msg: Message):
     log.info(f"Получен пост type={msg.content_type}")
     text = msg.text or msg.caption or ""
-    if POST_FOOTER and POST_FOOTER not in text:
-        text = f"{text}\n\n{POST_FOOTER}"
-
     post_id = await save_message(msg.from_user.id, msg.chat.id, msg.message_id, text, msg.content_type)
 
-    # Загрузка файлов для фото и видео
     file_path = None
     if msg.content_type in [ContentType.PHOTO, ContentType.VIDEO]:
         file_path = await download_media(msg)
@@ -114,14 +106,14 @@ async def receive_post(msg: Message):
             await update_file_path(post_id, file_path)
 
     await set_status(post_id, "draft")
-    await msg.answer("Выбери действие:", reply_markup=group_keyboard(post_id), parse_mode=ParseMode.HTML)
+    await msg.answer("Выбери действие:", reply_markup=group_keyboard(post_id))
 
 # ─── РЕДАКТИРОВАНИЕ ──────────────────
 @dp.callback_query(F.data.startswith("edit:"))
 async def edit_post(cb: CallbackQuery, state: FSMContext):
     post_id = int(cb.data.split(":")[1])
     await state.update_data(post_id=post_id)
-    await cb.message.answer("✏️ Пришли новый текст", parse_mode=ParseMode.HTML)
+    await cb.message.answer("✏️ Пришли новый текст")
     await state.set_state(EditPost.waiting_text)
     await cb.answer()
 
@@ -129,14 +121,11 @@ async def edit_post(cb: CallbackQuery, state: FSMContext):
 async def save_new_text(msg: Message, state: FSMContext):
     data = await state.get_data()
     post_id = data["post_id"]
-    new_text = msg.text
-    if POST_FOOTER and POST_FOOTER not in new_text:
-        new_text = f"{new_text}\n\n{POST_FOOTER}"
-    await update_text(post_id, new_text)
+    await update_text(post_id, msg.text)
     await set_status(post_id, "draft")
     log.info(f"Текст обновлён post_id={post_id}")
     await state.clear()
-    await msg.answer("✅ Текст обновлён", parse_mode=ParseMode.HTML)
+    await msg.answer("✅ Текст обновлён")
 
 # ─── ОТМЕНА ─────────────────────────
 @dp.callback_query(F.data.startswith("cancel:"))
@@ -144,7 +133,7 @@ async def cancel_post(cb: CallbackQuery):
     post_id = int(cb.data.split(":")[1])
     await set_status(post_id, "cancelled")
     log.info(f"Пост отменён post_id={post_id}")
-    await cb.message.edit_text("❌ Публикация отменена", parse_mode=ParseMode.HTML)
+    await cb.message.edit_text("❌ Публикация отменена")
     await cb.answer()
 
 # ─── ВЫБОР ГРУППЫ ───────────────────
@@ -153,12 +142,12 @@ async def choose_group(cb: CallbackQuery):
     _, post_id, group_name = cb.data.split(":")
     target_chat_id = GROUPS.get(group_name)
     if not target_chat_id:
-        await cb.message.answer("❌ Ошибка: группа не найдена", parse_mode=ParseMode.HTML)
+        await cb.message.answer("❌ Ошибка: группа не найдена")
         await cb.answer()
         return
     await set_target_chat(post_id, target_chat_id)
     kb = schedule_keyboard(post_id)
-    await cb.message.edit_text(f"Когда публикуем в {group_name}?", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await cb.message.edit_text(f"Когда публикуем в {group_name}?", reply_markup=kb)
     await cb.answer()
 
 # ─── ПЛАНИРОВАНИЕ ───────────────────
@@ -177,7 +166,7 @@ async def schedule_post(cb: CallbackQuery):
         id=job_id
     )
     await set_job(post_id, job_id)
-    await cb.message.edit_text(f"⏰ Пост запланирован через {minutes} мин", parse_mode=ParseMode.HTML)
+    await cb.message.edit_text(f"⏰ Пост запланирован через {minutes} мин")
     await cb.answer()
 
 # ─── ПУБЛИКАЦИЯ ─────────────────────
@@ -190,26 +179,43 @@ async def publish(post_id):
     text = post["caption"] or ""
 
     # Сообщение автору
-    await bot.send_message(post["chat_id"], "✅ Пост успешно отправлен", parse_mode=ParseMode.HTML)
+    await bot.send_message(
+        post["chat_id"], 
+        "✅ Пост успешно отправлен", 
+        parse_mode=ParseMode.HTML, 
+        disable_web_page_preview=True
+    )
 
     # Если текст — просто отправляем
     if post["content_type"] == ContentType.TEXT:
-        await bot.send_message(target_chat_id, text, parse_mode=ParseMode.HTML)
+        full_text = f"{text}\n\n{POST_FOOTER}"
+        await bot.send_message(
+            target_chat_id, 
+            full_text, 
+            parse_mode=ParseMode.HTML, 
+            disable_web_page_preview=True
+        )
     else:
         # Всё остальное пересылаем через copy_message (скрытый автор) с подписью
+        caption = f"{text}\n\n{POST_FOOTER}" if text else POST_FOOTER
         try:
             await bot.copy_message(
                 chat_id=target_chat_id,
                 from_chat_id=post["chat_id"],
                 message_id=post["message_id"],
-                caption=text if text else None,
-                parse_mode=ParseMode.HTML
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
             )
         except Exception as e:
             log.warning(f"Не удалось переслать post_id={post_id}: {e}")
             # fallback — просто текст
-            if text:
-                await bot.send_message(target_chat_id, text, parse_mode=ParseMode.HTML)
+            await bot.send_message(
+                target_chat_id, 
+                caption, 
+                parse_mode=ParseMode.HTML, 
+                disable_web_page_preview=True
+            )
 
     await set_status(post_id, "posted")
     log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
