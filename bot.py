@@ -192,14 +192,14 @@ async def publish(post_id):
     if post["status"] == "cancelled":
         return
 
-    target_chat_id = post.get("target_chat_id")
+    target_chat_id = post["target_chat_id"]
     if not target_chat_id:
-        log.warning(f"Не указан target_chat_id для post_id={post_id}")
-        return
+        # если группа не выбрана, отправляем обратно автору
+        target_chat_id = post["chat_id"]
 
-    await smart_send(target_chat_id, post['chat_id'], post_id, post['caption'], post['content_type'])
+    await smart_send(target_chat_id, post["chat_id"], post_id, post["caption"], post["content_type"])
     await set_status(post_id, "posted")
-    log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в {target_chat_id}")
+    log.info(f"ПОСТ ОТПРАВЛЕН post_id={post_id} в чат {target_chat_id}")
 
 # ─── SMART SEND ───────────────────────────────
 async def smart_send(target, source_chat, msg_id, text, content_type):
