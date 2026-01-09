@@ -47,7 +47,7 @@ def group_keyboard(post_id: int):
         [
             InlineKeyboardButton(text="MrMes", callback_data=f"group:{post_id}:The_Mr_Mes109"),
             InlineKeyboardButton(text="ProjectBW", callback_data=f"group:{post_id}:ProjectBW"),
-            InlineKeyboardButton(text="Помойка", callback_data=f"group:{post_id}:Помойка")
+            InlineKeyboardButton(text="Помойка", callback_data=f"group:{post_id}:Trash")
         ],
         [
             InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit:{post_id}"),
