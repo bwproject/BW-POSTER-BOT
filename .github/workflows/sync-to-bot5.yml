@@ -38,12 +38,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add bot4
+          git add bot5
 
           if git diff --cached --quiet; then
             echo "No changes to commit"
             exit 0
           fi
 
-          git commit -m "Sync bot4 from bw_ipa_repo"
+          git commit -m "Sync bot5"
           git push origin main
