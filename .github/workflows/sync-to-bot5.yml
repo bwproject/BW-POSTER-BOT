@@ -1,0 +1,49 @@
+name: Sync bw_ipa_repo to TikTok-Downloader-Bot/bot5
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+
+      - name: Setup git auth for private repo
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.TARGET_REPO_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Clone target repository
+        run: |
+          git clone https://github.com/bwproject/TikTok-Downloader-Bot.git target
+
+      - name: Sync files into bot4 folder
+        run: |
+          mkdir -p target/bot5
+
+          # Полное зеркало (удаляет старые файлы в bot5)
+          rsync -av --delete \
+            --exclude ".git" \
+            ./ target/bot5/
+
+      - name: Commit and push changes
+        run: |
+          cd target
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add bot4
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "Sync bot4 from bw_ipa_repo"
+          git push origin main
