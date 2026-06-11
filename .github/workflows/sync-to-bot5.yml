@@ -1,4 +1,4 @@
-name: Sync bw_ipa_repo to TikTok-Downloader-Bot/bot5
+name: Sync to TikTok-Downloader-Bot/bot5
 
 on:
   push:
